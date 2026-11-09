@@ -1,14 +1,15 @@
 {
   "name": "buku-kas-website",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "private": true,
-  "description": "Website Buku Kas dengan backend, login email/Google, dan panel admin terpisah.",
+  "description": "Website Buku Kas dengan verifikasi email, pemulihan akun, panel admin, dan isolasi data pengguna.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
     "create-admin": "node scripts/create-admin.js",
-    "check": "node --check server.js && node --check public/app.js && node --check scripts/create-admin.js && node --check scripts/import-legacy-sqlite.js"
+    "check": "node --check server.js && node --check public/app.js && node --check scripts/create-admin.js && node --check scripts/import-legacy-sqlite.js && node --check scripts/backup-database.js",
+    "backup": "node scripts/backup-database.js"
   },
   "engines": {
     "node": ">=20.11.0"

@@ -282,3 +282,79 @@ td { color:#354139; }
 }
 
 @media (max-width: 760px) { .mobile-nav .nav-link > span:not(.nav-icon) { display:none; } .mobile-nav .nav-link.active > span:not(.nav-icon) { display:inline; } }
+
+/* Product pricing and sale composer */
+.sale-composer {
+  padding: 15px;
+  border: 1px solid var(--border, #e5e9e5);
+  border-radius: 14px;
+  background: var(--surface-soft, #f8faf8);
+}
+.sale-composer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.sale-line {
+  padding: 12px;
+  margin-top: 10px;
+  border: 1px solid var(--border, #e5e9e5);
+  border-radius: 11px;
+  background: var(--surface, #fff);
+}
+.sale-line-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 2fr) minmax(80px, .7fr) minmax(135px, 1fr) minmax(105px, .8fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+.sale-line-grid .field { min-width: 0; }
+.sale-line-grid input, .sale-line-grid select { min-width: 0; width: 100%; }
+.sale-cost {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  font-weight: 700;
+  color: var(--text, #243027);
+}
+.sale-remove { margin-bottom: 1px; }
+.sale-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0,1fr));
+  gap: 10px;
+  padding-top: 13px;
+  margin-top: 13px;
+  border-top: 1px solid var(--border, #e5e9e5);
+}
+.sale-summary > div, .product-pricing-preview > div {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.sale-summary span, .product-pricing-preview span {
+  color: var(--muted, #68756c);
+  font-size: 11px;
+}
+.sale-summary strong, .product-pricing-preview strong {
+  font-size: 15px;
+  line-height: 1.35;
+}
+.product-pricing-preview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 12px;
+  margin-top: 15px;
+  padding: 14px;
+  border: 1px solid var(--border, #e5e9e5);
+  border-radius: 12px;
+  background: var(--surface-soft, #f8faf8);
+}
+@media (max-width: 760px) {
+  .sale-line-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .sale-product-field { grid-column: 1 / -1; }
+  .sale-line-hpp { min-height: 40px; }
+  .sale-remove { grid-column: 2; justify-self: end; }
+  .sale-summary { grid-template-columns: 1fr; }
+}

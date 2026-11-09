@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS users (
   google_id TEXT UNIQUE,
   role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user','admin')),
   is_active INTEGER NOT NULL DEFAULT 1,
+  email_verified_at TEXT,
+  session_version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -92,6 +94,76 @@ CREATE TABLE IF NOT EXISTS activity_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_actor ON activity_logs(actor_user_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  purpose TEXT NOT NULL CHECK(purpose IN ('verify_email','reset_password')),
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_purpose ON auth_tokens(user_id,purpose);
+CREATE TRIGGER IF NOT EXISTS products_category_owner_insert
+BEFORE INSERT ON products
+WHEN NOT EXISTS (SELECT 1 FROM categories WHERE id=NEW.category_id AND user_id=NEW.user_id)
+BEGIN SELECT RAISE(ABORT, 'Product category owner mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS products_category_owner_update
+BEFORE UPDATE OF category_id,user_id ON products
+WHEN NOT EXISTS (SELECT 1 FROM categories WHERE id=NEW.category_id AND user_id=NEW.user_id)
+BEGIN SELECT RAISE(ABORT, 'Product category owner mismatch'); END;
+`);
+
+// Forward-compatible migrations for existing database files.
+function ensureColumn(table, column, definition) {
+  const columns = db.pragma(`table_info(${table})`);
+  if (!columns.some(item => item.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+ensureColumn('users', 'email_verified_at', 'TEXT');
+ensureColumn('users', 'session_version', 'INTEGER NOT NULL DEFAULT 1');
+// Product pricing: unit_cost is the HPP/modal per unit; sale_price is the configured selling price.
+ensureColumn('products', 'unit_cost', 'REAL NOT NULL DEFAULT 0');
+ensureColumn('products', 'sale_price', 'REAL NOT NULL DEFAULT 0');
+ensureColumn('products', 'pricing_method', "TEXT NOT NULL DEFAULT 'manual'");
+ensureColumn('products', 'pricing_value', 'REAL NOT NULL DEFAULT 0');
+ensureColumn('profits', 'source_transaction_id', 'INTEGER REFERENCES transactions(id) ON DELETE CASCADE');
+// Preserve the old product price as the sale price for existing records.
+ db.exec('UPDATE products SET sale_price=price WHERE sale_price=0 AND price>0');
+ db.exec(`
+CREATE TABLE IF NOT EXISTS transaction_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  product_name TEXT NOT NULL,
+  quantity INTEGER NOT NULL CHECK(quantity > 0),
+  unit_sale_price REAL NOT NULL CHECK(unit_sale_price >= 0),
+  unit_cost REAL NOT NULL CHECK(unit_cost >= 0),
+  line_total REAL NOT NULL CHECK(line_total >= 0),
+  line_profit REAL NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_transaction_items_user_transaction ON transaction_items(user_id,transaction_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_profits_source_transaction ON profits(source_transaction_id) WHERE source_transaction_id IS NOT NULL;
+CREATE TRIGGER IF NOT EXISTS transaction_items_owner_insert
+BEFORE INSERT ON transaction_items
+WHEN NOT EXISTS (SELECT 1 FROM transactions WHERE id=NEW.transaction_id AND user_id=NEW.user_id)
+  OR (NEW.product_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM products WHERE id=NEW.product_id AND user_id=NEW.user_id))
+BEGIN SELECT RAISE(ABORT, 'Transaction item owner mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS transaction_items_owner_update
+BEFORE UPDATE OF user_id,transaction_id,product_id ON transaction_items
+WHEN NOT EXISTS (SELECT 1 FROM transactions WHERE id=NEW.transaction_id AND user_id=NEW.user_id)
+  OR (NEW.product_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM products WHERE id=NEW.product_id AND user_id=NEW.user_id))
+BEGIN SELECT RAISE(ABORT, 'Transaction item owner mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS profits_source_owner_insert
+BEFORE INSERT ON profits
+WHEN NEW.source_transaction_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM transactions WHERE id=NEW.source_transaction_id AND user_id=NEW.user_id)
+BEGIN SELECT RAISE(ABORT, 'Profit source owner mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS profits_source_owner_update
+BEFORE UPDATE OF source_transaction_id,user_id ON profits
+WHEN NEW.source_transaction_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM transactions WHERE id=NEW.source_transaction_id AND user_id=NEW.user_id)
+BEGIN SELECT RAISE(ABORT, 'Profit source owner mismatch'); END;
 `);
 
 const app = express();
@@ -115,6 +187,7 @@ app.use(helmet({
     }
   }
 }));
+app.use((req, res, next) => { res.setHeader('Referrer-Policy', 'no-referrer'); next(); });
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: false, limit: '30kb' }));
 
@@ -137,7 +210,9 @@ app.use(session({
 app.use(passport.initialize());
 app.use(express.static(path.join(__dirname, 'public'), { index: false, maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0 }));
 
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 12, standardHeaders: 'draft-7', legacyHeaders: false, message: { error: 'Terlalu banyak percobaan. Coba lagi beberapa menit.' } });
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 12, standardHeaders: 'draft-7', legacyHeaders: false, message: { error: 'Terlalu banyak permintaan. Coba lagi beberapa menit.' } });
+const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 5, skipSuccessfulRequests: true, standardHeaders: 'draft-7', legacyHeaders: false, message: { error: 'Terlalu banyak percobaan login gagal dari jaringan ini. Coba lagi 15 menit.' } });
+const recoveryLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 5, standardHeaders: 'draft-7', legacyHeaders: false, message: { error: 'Terlalu banyak permintaan pemulihan akun. Coba lagi nanti.' } });
 const writeLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: 'draft-7', legacyHeaders: false });
 
 app.use('/api', writeLimiter, (req, res, next) => {
@@ -147,11 +222,13 @@ app.use('/api', writeLimiter, (req, res, next) => {
 });
 
 function safeUser(row) {
-  return row ? { id: row.id, name: row.name, email: row.email, role: row.role, isActive: Boolean(row.is_active), createdAt: row.created_at } : null;
+  return row ? { id: row.id, name: row.name, email: row.email, role: row.role, isActive: Boolean(row.is_active), emailVerified: Boolean(row.email_verified_at), createdAt: row.created_at } : null;
 }
 function currentUser(req) {
   if (!req.session || !req.session.userId) return null;
-  return db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId) || null;
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId) || null;
+  if (!user || !user.is_active || Number(req.session.sessionVersion) !== Number(user.session_version)) return null;
+  return user;
 }
 function recordActivity(req, action, entityType, entityId = null, metadata = {}, actorOverride = null) {
   const actor = actorOverride || currentUser(req);
@@ -166,11 +243,88 @@ function recordActivity(req, action, entityType, entityId = null, metadata = {},
     req.ip || null
   );
 }
+const emailProvider = String(process.env.EMAIL_PROVIDER || (process.env.NODE_ENV === 'production' ? 'none' : 'console')).toLowerCase();
+function emailDeliveryReady() {
+  if (emailProvider === 'console') return process.env.NODE_ENV !== 'production';
+  return emailProvider === 'resend' && Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM);
+}
+function escapeEmailHtml(value) {
+  return String(value ?? '').replace(/[&<>\"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '\"':'&quot;', "'":'&#39;' }[char]));
+}
+async function sendEmail({ to, subject, html, text }) {
+  if (emailProvider === 'console' && process.env.NODE_ENV !== 'production') {
+    console.log(`\n[EMAIL DEVELOPMENT ONLY]\nTo: ${to}\nSubject: ${subject}\n${text || html}\n`);
+    return;
+  }
+  if (!emailDeliveryReady()) throw new Error('Layanan email belum dikonfigurasi.');
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+      'User-Agent': 'buku-kas-website/1.1'
+    },
+    body: JSON.stringify({ from: process.env.EMAIL_FROM, to: [to], subject, html, text })
+  });
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => '');
+    console.error(`Email provider returned HTTP ${response.status}: ${errorBody.slice(0, 500)}`);
+    throw new Error('Email tidak dapat dikirim.');
+  }
+}
+function createAuthToken(userId, purpose, minutes) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  db.prepare('DELETE FROM auth_tokens WHERE user_id=? AND purpose=?').run(userId, purpose);
+  db.prepare('INSERT INTO auth_tokens(user_id,purpose,token_hash,expires_at_ms) VALUES(?,?,?,?)')
+    .run(userId, purpose, tokenHash, Date.now() + minutes * 60 * 1000);
+  return token;
+}
+async function sendVerificationEmail(user) {
+  if (!emailDeliveryReady()) throw new Error('Pengiriman email belum dikonfigurasi.');
+  const token = createAuthToken(user.id, 'verify_email', 30);
+  const link = `${BASE_URL}/verify-email?token=${encodeURIComponent(token)}`;
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: 'Verifikasi email Buku Kas',
+      html: `<p>Halo ${escapeEmailHtml(user.name)},</p><p>Konfirmasi alamat email untuk mengaktifkan akun Buku Kas.</p><p><a href=\"${link}\">Verifikasi alamat email</a></p><p>Tautan berlaku 30 menit dan hanya dapat digunakan sekali.</p>`,
+      text: `Halo ${user.name}, buka tautan berikut untuk verifikasi email (berlaku 30 menit): ${link}`
+    });
+  } catch (error) {
+    db.prepare('DELETE FROM auth_tokens WHERE user_id=? AND purpose=\'verify_email\'').run(user.id);
+    throw error;
+  }
+}
+async function sendPasswordResetEmail(user) {
+  if (!emailDeliveryReady()) throw new Error('Pengiriman email belum dikonfigurasi.');
+  const token = createAuthToken(user.id, 'reset_password', 20);
+  const link = `${BASE_URL}/reset-password?token=${encodeURIComponent(token)}`;
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: 'Atur ulang password Buku Kas',
+      html: `<p>Halo ${escapeEmailHtml(user.name)},</p><p>Gunakan tautan berikut untuk membuat password baru.</p><p><a href=\"${link}\">Atur ulang password</a></p><p>Tautan berlaku 20 menit. Abaikan email ini bila kamu tidak meminta reset password.</p>`,
+      text: `Atur ulang password Buku Kas (berlaku 20 menit): ${link}`
+    });
+  } catch (error) {
+    db.prepare('DELETE FROM auth_tokens WHERE user_id=? AND purpose=\'reset_password\'').run(user.id);
+    throw error;
+  }
+}
+function findValidAuthToken(token, purpose) {
+  if (typeof token !== 'string' || token.length < 32 || token.length > 200) return null;
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  return db.prepare('SELECT t.*,u.email,u.name,u.role,u.is_active FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=? AND t.purpose=? AND t.expires_at_ms>?')
+    .get(tokenHash, purpose, Date.now()) || null;
+}
+
 function asyncSessionLogin(req, user) {
   return new Promise((resolve, reject) => {
     req.session.regenerate(err => {
       if (err) return reject(err);
       req.session.userId = user.id;
+      req.session.sessionVersion = Number(user.session_version || 1);
       req.session.csrfToken = crypto.randomBytes(32).toString('hex');
       req.session.save(saveErr => saveErr ? reject(saveErr) : resolve(req.session.csrfToken));
     });
@@ -274,7 +428,7 @@ function dbErrorMessage(err) {
 }
 
 // Google OAuth hanya dipasang jika credential sudah dikonfigurasi.
-const googleReady = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+const googleReady = process.env.ENABLE_GOOGLE_OAUTH === 'true' && Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
 if (googleReady) {
   passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID,
@@ -288,12 +442,12 @@ if (googleReady) {
       let user = db.prepare('SELECT * FROM users WHERE google_id = ? OR email = ?').get(profile.id, email);
       if (user?.role === 'admin') return done(null, false, { message: 'Akun admin tidak dapat masuk melalui Google.' });
       if (user && !user.google_id) {
-        db.prepare("UPDATE users SET google_id = ?, updated_at = datetime('now') WHERE id = ?").run(profile.id, user.id);
+        db.prepare("UPDATE users SET google_id = ?, email_verified_at=COALESCE(email_verified_at,datetime('now')), updated_at = datetime('now') WHERE id = ?").run(profile.id, user.id);
         user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
       }
       if (!user) {
         const name = String(profile.displayName || email.split('@')[0]).slice(0, 100);
-        const result = db.prepare('INSERT INTO users (name,email,google_id,role) VALUES (?,?,? ,\'user\')').run(name, email, profile.id);
+        const result = db.prepare("INSERT INTO users (name,email,google_id,role,email_verified_at) VALUES (?,?,?,'user',datetime('now'))").run(name, email, profile.id);
         user = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
       }
       if (!user.is_active) return done(null, false, { message: 'Akun dinonaktifkan. Hubungi admin.' });
@@ -319,17 +473,24 @@ app.post('/api/auth/register', authLimiter, requireCsrf, async (req, res) => {
     const email = String(req.body.email || '').trim().toLowerCase();
     const password = String(req.body.password || '');
     if (!/^\S+@\S+\.\S+$/.test(email) || email.length > 190) return res.status(400).json({ error: 'Format email tidak valid.' });
-    if (password.length < 10 || password.length > 100) return res.status(400).json({ error: 'Password minimal 10 karakter.' });
+    if (password.length < 12 || password.length > 100) return res.status(400).json({ error: 'Password minimal 12 karakter.' });
+    if (!emailDeliveryReady()) return res.status(503).json({ error: 'Pendaftaran sementara belum tersedia karena layanan email belum dikonfigurasi oleh pengelola.' });
     if (db.prepare('SELECT id FROM users WHERE email = ?').get(email)) return res.status(409).json({ error: 'Email sudah terdaftar.' });
     const hash = await bcrypt.hash(password, 12);
     const result = db.prepare("INSERT INTO users (name,email,password_hash,role) VALUES (?,?,?,'user')").run(name, email, hash);
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
-    const csrfToken = await asyncSessionLogin(req, user);
-    recordActivity(req, 'register', 'account', user.id, {}, user);
-    res.status(201).json({ user: safeUser(user), csrfToken });
+    try {
+      await sendVerificationEmail(user);
+    } catch (mailError) {
+      console.error('Verification email could not be sent:', mailError.message);
+      recordActivity(req, 'register_email_delivery_failed', 'account', user.id, {}, user);
+      return res.status(503).json({ error: 'Akun tercatat, tetapi email verifikasi belum terkirim. Coba login kembali setelah layanan email siap untuk meminta tautan baru.' });
+    }
+    recordActivity(req, 'register_pending_verification', 'account', user.id, {}, user);
+    res.status(201).json({ message: 'Akun dibuat. Periksa email untuk verifikasi sebelum login.' });
   } catch (err) { res.status(400).json({ error: dbErrorMessage(err) }); }
 });
-app.post('/api/auth/login', authLimiter, requireCsrf, async (req, res) => {
+app.post('/api/auth/login', loginLimiter, requireCsrf, async (req, res) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase();
     const password = String(req.body.password || '');
@@ -338,13 +499,65 @@ app.post('/api/auth/login', authLimiter, requireCsrf, async (req, res) => {
       return res.status(401).json({ error: 'Email atau password salah.' });
     }
     if (!user.is_active) return res.status(403).json({ error: 'Akun dinonaktifkan. Hubungi admin.' });
-    if (user.role === 'admin') return res.status(403).json({ error: 'Gunakan halaman login admin.' });
+    if (user.role !== 'user') return res.status(403).json({ error: 'Gunakan halaman login admin.' });
+    if (!user.email_verified_at) {
+      let message = 'Email belum terverifikasi. Coba lagi setelah layanan email tersedia.';
+      if (emailDeliveryReady()) {
+        try { await sendVerificationEmail(user); message = 'Email belum terverifikasi. Tautan verifikasi baru telah dikirim.'; }
+        catch (mailError) { console.error('Verification resend failed:', mailError.message); }
+      }
+      recordActivity(req, 'login_unverified_email', 'account', user.id, {}, user);
+      return res.status(403).json({ error: message, code: 'EMAIL_NOT_VERIFIED' });
+    }
     const csrfToken = await asyncSessionLogin(req, user);
     recordActivity(req, 'login', 'account', user.id, {}, user);
     res.json({ user: safeUser(user), csrfToken });
   } catch (err) { res.status(500).json({ error: 'Login gagal diproses.' }); }
 });
-app.post('/api/auth/admin/login', authLimiter, requireCsrf, async (req, res) => {
+app.post('/api/auth/forgot-password', recoveryLimiter, async (req, res) => {
+  const genericMessage = 'Jika email terdaftar dan sudah terverifikasi, tautan pemulihan akan dikirim.';
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (/^\S+@\S+\.\S+$/.test(email) && emailDeliveryReady()) {
+    const user = db.prepare("SELECT * FROM users WHERE email=? AND role='user' AND is_active=1 AND email_verified_at IS NOT NULL").get(email);
+    if (user) {
+      try {
+        await sendPasswordResetEmail(user);
+        recordActivity(req, 'password_reset_requested', 'account', user.id, {}, user);
+      } catch (mailError) {
+        console.error('Password reset email could not be sent:', mailError.message);
+      }
+    }
+  }
+  res.json({ message: genericMessage });
+});
+app.post('/api/auth/verify-email', recoveryLimiter, (req, res) => {
+  const row = findValidAuthToken(req.body.token, 'verify_email');
+  if (!row || row.role !== 'user' || !row.is_active) return res.status(400).json({ error: 'Tautan verifikasi tidak valid atau sudah kedaluwarsa. Login kembali untuk meminta tautan baru.' });
+  const complete = db.transaction(() => {
+    db.prepare("UPDATE users SET email_verified_at=COALESCE(email_verified_at,datetime('now')),updated_at=datetime('now') WHERE id=? AND role='user'").run(row.user_id);
+    db.prepare('DELETE FROM auth_tokens WHERE id=?').run(row.id);
+  });
+  complete();
+  recordActivity(req, 'email_verified', 'account', row.user_id, {}, { id: row.user_id, email: row.email });
+  res.json({ ok: true, message: 'Email berhasil diverifikasi. Silakan login.' });
+});
+app.post('/api/auth/reset-password', recoveryLimiter, async (req, res) => {
+  const password = String(req.body.password || '');
+  if (password.length < 12 || password.length > 100) return res.status(400).json({ error: 'Password baru minimal 12 karakter.' });
+  const row = findValidAuthToken(req.body.token, 'reset_password');
+  if (!row || row.role !== 'user' || !row.is_active) return res.status(400).json({ error: 'Tautan reset password tidak valid atau sudah kedaluwarsa.' });
+  try {
+    const hash = await bcrypt.hash(password, 12);
+    const update = db.transaction(() => {
+      db.prepare("UPDATE users SET password_hash=?,session_version=session_version+1,updated_at=datetime('now') WHERE id=? AND role='user'").run(hash, row.user_id);
+      db.prepare('DELETE FROM auth_tokens WHERE user_id=?').run(row.user_id);
+    });
+    update();
+    recordActivity(req, 'password_reset_completed', 'account', row.user_id, {}, { id: row.user_id, email: row.email });
+    res.json({ ok: true, message: 'Password berhasil diperbarui. Silakan login dengan password baru.' });
+  } catch (err) { res.status(500).json({ error: 'Reset password gagal diproses.' }); }
+});
+app.post('/api/auth/admin/login', loginLimiter, requireCsrf, async (req, res) => {
   try {
     if (!adminNetworkAllowed(req.ip)) return res.status(403).json({ error: 'Jaringan ini tidak diizinkan untuk login admin.' });
     const email = String(req.body.email || '').trim().toLowerCase();
@@ -395,7 +608,8 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
     COALESCE(SUM(CASE WHEN type='Masuk' THEN amount ELSE 0 END),0) AS totalIn,
     COALESCE(SUM(CASE WHEN type='Keluar' THEN amount ELSE 0 END),0) AS totalOut
     FROM profits WHERE user_id=?`).get(id);
-  const recent = db.prepare('SELECT * FROM transactions WHERE user_id=? ORDER BY date DESC,id DESC LIMIT 5').all(id);
+  const recentRows = db.prepare('SELECT * FROM transactions WHERE user_id=? ORDER BY date DESC,id DESC LIMIT 5').all(id);
+  const recent = recentRows.map(row => ({ ...row, items: transactionLines(row.id, id) }));
   recordActivity(req, 'dashboard_view', 'dashboard');
   res.json({ cash: { ...cash, balance: cash.totalIn - cash.totalOut }, profit: { ...profit, balance: profit.totalIn - profit.totalOut }, recent });
 });
@@ -403,11 +617,17 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
 function registerLedgerRoutes(route, table, label) {
   app.get(route, requireAuth, (req, res) => {
     const rows = db.prepare(`SELECT * FROM ${table} WHERE user_id=? ORDER BY date DESC,id DESC`).all(req.user.id);
+    const items = table === 'transactions' ? rows.map(row => ({ ...row, items: transactionLines(row.id, req.user.id) })) : rows;
     recordActivity(req, `${label}_list_view`, label);
-    res.json({ items: rows });
+    res.json({ items });
   });
   app.post(route, requireAuth, (req, res) => {
     try {
+      if (table === 'transactions') {
+        const saved = saveTransaction(req);
+        recordActivity(req, 'transaction_create', 'transaction', saved.transactionId, { description: saved.description, type: saved.type, amount: saved.amount, productCount: saved.items.length });
+        return res.status(201).json({ item: { ...db.prepare('SELECT * FROM transactions WHERE id=? AND user_id=?').get(saved.transactionId, req.user.id), items: transactionLines(saved.transactionId, req.user.id) } });
+      }
       const item = validateRecord(req.body);
       const result = db.prepare(`INSERT INTO ${table} (user_id,date,description,type,amount) VALUES (?,?,?,?,?)`)
         .run(req.user.id, item.date, item.description, item.type, item.amount);
@@ -419,6 +639,14 @@ function registerLedgerRoutes(route, table, label) {
     try {
       const id = parseId(req.params.id);
       if (!id) return res.status(400).json({ error: 'ID tidak valid.' });
+      if (table === 'transactions') {
+        const saved = saveTransaction(req, id);
+        recordActivity(req, 'transaction_update', 'transaction', id, { description: saved.description, type: saved.type, amount: saved.amount, productCount: saved.items.length });
+        return res.json({ item: { ...db.prepare('SELECT * FROM transactions WHERE id=? AND user_id=?').get(id, req.user.id), items: transactionLines(id, req.user.id) } });
+      }
+      const existing = db.prepare('SELECT * FROM profits WHERE id=? AND user_id=?').get(id, req.user.id);
+      if (!existing) return res.status(404).json({ error: 'Data tidak ditemukan.' });
+      if (existing.source_transaction_id) return res.status(409).json({ error: 'Keuntungan otomatis mengikuti transaksi penjualan. Edit transaksi penjualannya dari Buku Kas.' });
       const item = validateRecord(req.body);
       const result = db.prepare(`UPDATE ${table} SET date=?,description=?,type=?,amount=?,updated_at=datetime('now') WHERE id=? AND user_id=?`)
         .run(item.date, item.description, item.type, item.amount, id, req.user.id);
@@ -430,10 +658,19 @@ function registerLedgerRoutes(route, table, label) {
   app.delete(`${route}/:id`, requireAuth, (req, res) => {
     const id = parseId(req.params.id);
     if (!id) return res.status(400).json({ error: 'ID tidak valid.' });
-    const old = db.prepare(`SELECT description,amount FROM ${table} WHERE id=? AND user_id=?`).get(id, req.user.id);
+    const old = db.prepare(`SELECT * FROM ${table} WHERE id=? AND user_id=?`).get(id, req.user.id);
     if (!old) return res.status(404).json({ error: 'Data tidak ditemukan.' });
-    db.prepare(`DELETE FROM ${table} WHERE id=? AND user_id=?`).run(id, req.user.id);
-    recordActivity(req, `${label}_delete`, label, id, old);
+    if (table === 'profits' && old.source_transaction_id) return res.status(409).json({ error: 'Keuntungan otomatis mengikuti transaksi penjualan. Hapus transaksi penjualannya dari Buku Kas.' });
+    if (table === 'transactions') {
+      const remove = db.transaction(() => {
+        restoreTransactionStock(id, req.user.id);
+        db.prepare('DELETE FROM transactions WHERE id=? AND user_id=?').run(id, req.user.id);
+      });
+      remove();
+    } else {
+      db.prepare(`DELETE FROM ${table} WHERE id=? AND user_id=?`).run(id, req.user.id);
+    }
+    recordActivity(req, `${label}_delete`, label, id, { description: old.description, amount: old.amount });
     res.json({ ok: true });
   });
 }
@@ -472,7 +709,125 @@ app.delete('/api/categories/:id', requireAuth, (req, res) => {
   recordActivity(req, 'category_delete', 'category', id, { name: row.name, deletedProducts: count });
   res.json({ ok: true, deletedProducts: count });
 });
+function calculateProductPricing(body) {
+  const unitCost = Number(body.unitCost ?? 0);
+  const pricingMethod = String(body.pricingMethod || 'manual');
+  const pricingValue = Number(body.pricingValue ?? 0);
+  let salePrice;
+  if (!Number.isSafeInteger(unitCost) || unitCost <= 0 || unitCost > 1_000_000_000_000) throw new Error('HPP/modal per unit harus lebih dari 0 dan berupa angka rupiah bulat.');
+  if (!Number.isFinite(pricingValue) || pricingValue < 0 || pricingValue > 1_000_000_000 || (pricingMethod === 'fixed' && !Number.isSafeInteger(pricingValue))) throw new Error('Nilai metode harga jual tidak valid.');
+  if (pricingMethod === 'manual') {
+    salePrice = Number(body.salePrice ?? body.price);
+  } else if (pricingMethod === 'markup') {
+    salePrice = unitCost * (1 + pricingValue / 100);
+  } else if (pricingMethod === 'margin') {
+    if (pricingValue >= 100) throw new Error('Target margin harus kurang dari 100%.');
+    salePrice = unitCost / (1 - pricingValue / 100);
+  } else if (pricingMethod === 'fixed') {
+    salePrice = unitCost + pricingValue;
+  } else {
+    throw new Error('Metode harga jual tidak dikenal.');
+  }
+  salePrice = Math.round(salePrice);
+  if (!Number.isSafeInteger(salePrice) || salePrice <= 0 || salePrice > 1_000_000_000_000) throw new Error('Harga jual harus lebih dari 0 dan masih dalam batas yang didukung.');
+  return { unitCost, salePrice, pricingMethod, pricingValue };
+}
+function transactionLines(transactionId, userId) {
+  return db.prepare(`SELECT id,product_id,product_name,quantity,unit_sale_price,unit_cost,line_total,line_profit
+    FROM transaction_items WHERE transaction_id=? AND user_id=? ORDER BY id`).all(transactionId, userId);
+}
+function restoreTransactionStock(transactionId, userId) {
+  const lines = transactionLines(transactionId, userId);
+  const restore = db.prepare('UPDATE products SET stock=stock+?,updated_at=datetime(\'now\') WHERE id=? AND user_id=?');
+  for (const line of lines) {
+    if (line.product_id) restore.run(line.quantity, line.product_id, userId);
+  }
+  db.prepare('DELETE FROM transaction_items WHERE transaction_id=? AND user_id=?').run(transactionId, userId);
+  db.prepare('DELETE FROM profits WHERE source_transaction_id=? AND user_id=?').run(transactionId, userId);
+}
+function saveTransaction(req, id = null) {
+  const body = req.body || {};
+  const hasItems = Array.isArray(body.items) && body.items.length > 0;
+  if (hasItems && String(body.type) !== 'Masuk') throw new Error('Produk katalog hanya bisa digunakan untuk transaksi Masuk.');
+  if (Array.isArray(body.items) && body.items.length > 50) throw new Error('Maksimal 50 baris produk dalam satu transaksi.');
+  let manual = null;
+  if (!hasItems) manual = validateRecord(body);
+  else {
+    if (!validDate(body.date)) throw new Error('Tanggal tidak valid.');
+    if (body.description && String(body.description).trim().length > 200) throw new Error('Keterangan maksimal 200 karakter.');
+  }
+  const userId = req.user.id;
+  const save = db.transaction(() => {
+    let old = null;
+    if (id) {
+      old = db.prepare('SELECT * FROM transactions WHERE id=? AND user_id=?').get(id, userId);
+      if (!old) throw new Error('Data transaksi tidak ditemukan.');
+      restoreTransactionStock(id, userId);
+    }
+    let description, type, amount, date;
+    let normalizedLines = [];
+    if (hasItems) {
+      date = String(body.date);
+      const aggregate = new Map();
+      for (const raw of body.items) {
+        const productId = parseId(raw.productId);
+        const quantity = Number(raw.quantity);
+        if (!productId || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > 1_000_000) throw new Error('Produk atau jumlah barang tidak valid.');
+        const product = db.prepare(`SELECT id,name,stock,unit_cost,sale_price,price FROM products WHERE id=? AND user_id=?`).get(productId, userId);
+        if (!product) throw new Error('Salah satu produk tidak ditemukan pada katalog Anda.');
+        if (product.unit_cost <= 0) throw new Error(`Isi HPP/modal per unit untuk produk "${product.name}" sebelum dijual.`);
+        const unitSalePrice = raw.unitSalePrice === undefined || raw.unitSalePrice === '' ? Number(product.sale_price || product.price) : Number(raw.unitSalePrice);
+        if (!Number.isSafeInteger(unitSalePrice) || unitSalePrice <= 0 || unitSalePrice > 1_000_000_000_000) throw new Error(`Harga jual produk "${product.name}" tidak valid.`);
+        const lineTotal = unitSalePrice * quantity;
+        const lineProfit = (unitSalePrice - Number(product.unit_cost)) * quantity;
+        if (!Number.isSafeInteger(lineTotal) || !Number.isSafeInteger(lineProfit)) throw new Error(`Nilai transaksi produk \"${product.name}\" melebihi batas yang didukung.`);
+        aggregate.set(productId, (aggregate.get(productId) || 0) + quantity);
+        normalizedLines.push({ productId, productName: product.name, quantity, unitSalePrice, unitCost: Number(product.unit_cost), lineTotal, lineProfit });
+      }
+      for (const [productId, quantity] of aggregate) {
+        const product = db.prepare('SELECT name,stock FROM products WHERE id=? AND user_id=?').get(productId, userId);
+        if (!product || product.stock < quantity) throw new Error(`Stok produk "${product?.name || ''}" tidak mencukupi. Stok tersedia: ${product?.stock ?? 0}.`);
+      }
+      amount = normalizedLines.reduce((sum, line) => sum + line.lineTotal, 0);
+      if (!Number.isSafeInteger(amount) || amount <= 0 || amount > 1_000_000_000_000) throw new Error('Total penjualan tidak valid.');
+      type = 'Masuk';
+      description = String(body.description || '').trim() || `Penjualan ${normalizedLines.length} jenis produk`;
+    } else {
+      ({ date, description, type, amount } = manual);
+    }
+    let transactionId = id;
+    if (id) {
+      db.prepare(`UPDATE transactions SET date=?,description=?,type=?,amount=?,updated_at=datetime('now') WHERE id=? AND user_id=?`)
+        .run(date, description, type, amount, id, userId);
+    } else {
+      transactionId = Number(db.prepare('INSERT INTO transactions(user_id,date,description,type,amount) VALUES(?,?,?,?,?)')
+        .run(userId, date, description, type, amount).lastInsertRowid);
+    }
+    if (hasItems) {
+      const insertLine = db.prepare(`INSERT INTO transaction_items(user_id,transaction_id,product_id,product_name,quantity,unit_sale_price,unit_cost,line_total,line_profit)
+        VALUES(?,?,?,?,?,?,?,?,?)`);
+      const decrement = db.prepare(`UPDATE products SET stock=stock-?,updated_at=datetime('now') WHERE id=? AND user_id=? AND stock>=?`);
+      const aggregate = new Map();
+      for (const line of normalizedLines) {
+        insertLine.run(userId, transactionId, line.productId, line.productName, line.quantity, line.unitSalePrice, line.unitCost, line.lineTotal, line.lineProfit);
+        aggregate.set(line.productId, (aggregate.get(line.productId) || 0) + line.quantity);
+      }
+      for (const [productId, quantity] of aggregate) {
+        const result = decrement.run(quantity, productId, userId, quantity);
+        if (!result.changes) throw new Error('Stok berubah saat transaksi diproses. Muat ulang dan coba kembali.');
+      }
+      const netProfit = normalizedLines.reduce((sum, line) => sum + line.lineProfit, 0);
+      if (netProfit !== 0) {
+        db.prepare(`INSERT INTO profits(user_id,date,description,type,amount,source_transaction_id)
+          VALUES(?,?,?,?,?,?)`).run(userId, date, `Margin penjualan: ${description}`, netProfit > 0 ? 'Masuk' : 'Keluar', Math.abs(netProfit), transactionId);
+      }
+    }
+    return { transactionId, description, type, amount, items: normalizedLines };
+  });
+  return save();
+}
 app.get('/api/products', requireAuth, (req, res) => {
+  recordActivity(req, 'product_list_view', 'product');
   const items = db.prepare(`SELECT p.*,c.name AS category_name FROM products p
     JOIN categories c ON c.id=p.category_id AND c.user_id=p.user_id
     WHERE p.user_id=? ORDER BY c.name COLLATE NOCASE,p.name COLLATE NOCASE`).all(req.user.id);
@@ -480,22 +835,24 @@ app.get('/api/products', requireAuth, (req, res) => {
 });
 app.post('/api/products', requireAuth, (req, res) => {
   try {
-    const categoryId = parseId(req.body.categoryId); const name = validateName(req.body.name, 'Nama barang'); const price = Number(req.body.price);
+    const categoryId = parseId(req.body.categoryId); const name = validateName(req.body.name, 'Nama barang');
+    const pricing = calculateProductPricing(req.body);
     if (!categoryId || !db.prepare('SELECT id FROM categories WHERE id=? AND user_id=?').get(categoryId, req.user.id)) return res.status(400).json({ error: 'Kategori tidak valid.' });
-    if (!Number.isFinite(price) || price < 0) return res.status(400).json({ error: 'Harga tidak valid.' });
-    const result = db.prepare('INSERT INTO products(user_id,category_id,name,price) VALUES(?,?,?,?)').run(req.user.id, categoryId, name, price);
-    recordActivity(req, 'product_create', 'product', result.lastInsertRowid, { name, price, categoryId });
+    const result = db.prepare(`INSERT INTO products(user_id,category_id,name,price,unit_cost,sale_price,pricing_method,pricing_value)
+      VALUES(?,?,?,?,?,?,?,?)`).run(req.user.id, categoryId, name, pricing.salePrice, pricing.unitCost, pricing.salePrice, pricing.pricingMethod, pricing.pricingValue);
+    recordActivity(req, 'product_create', 'product', result.lastInsertRowid, { name, ...pricing, categoryId });
     res.status(201).json({ item: db.prepare('SELECT p.*,c.name AS category_name FROM products p JOIN categories c ON c.id=p.category_id WHERE p.id=? AND p.user_id=?').get(result.lastInsertRowid, req.user.id) });
   } catch (err) { res.status(400).json({ error: dbErrorMessage(err) }); }
 });
 app.put('/api/products/:id', requireAuth, (req, res) => {
   try {
-    const id = parseId(req.params.id); const categoryId = parseId(req.body.categoryId); const name = validateName(req.body.name, 'Nama barang'); const price = Number(req.body.price);
+    const id = parseId(req.params.id); const categoryId = parseId(req.body.categoryId); const name = validateName(req.body.name, 'Nama barang');
+    const pricing = calculateProductPricing(req.body);
     if (!id || !categoryId || !db.prepare('SELECT id FROM categories WHERE id=? AND user_id=?').get(categoryId, req.user.id)) return res.status(400).json({ error: 'ID atau kategori tidak valid.' });
-    if (!Number.isFinite(price) || price < 0) return res.status(400).json({ error: 'Harga tidak valid.' });
-    const result = db.prepare('UPDATE products SET category_id=?,name=?,price=?,updated_at=datetime(\'now\') WHERE id=? AND user_id=?').run(categoryId, name, price, id, req.user.id);
+    const result = db.prepare(`UPDATE products SET category_id=?,name=?,price=?,unit_cost=?,sale_price=?,pricing_method=?,pricing_value=?,updated_at=datetime('now')
+      WHERE id=? AND user_id=?`).run(categoryId, name, pricing.salePrice, pricing.unitCost, pricing.salePrice, pricing.pricingMethod, pricing.pricingValue, id, req.user.id);
     if (!result.changes) return res.status(404).json({ error: 'Barang tidak ditemukan.' });
-    recordActivity(req, 'product_update', 'product', id, { name, price, categoryId });
+    recordActivity(req, 'product_update', 'product', id, { name, ...pricing, categoryId });
     res.json({ item: db.prepare('SELECT p.*,c.name AS category_name FROM products p JOIN categories c ON c.id=p.category_id WHERE p.id=? AND p.user_id=?').get(id, req.user.id) });
   } catch (err) { res.status(400).json({ error: dbErrorMessage(err) }); }
 });
@@ -522,7 +879,8 @@ app.get('/api/reports', requireAuth, (req, res) => {
   const from = validDate(req.query.from) ? req.query.from : '2000-01-01';
   const to = validDate(req.query.to) ? req.query.to : '2100-12-31';
   if (from > to) return res.status(400).json({ error: 'Tanggal awal tidak boleh melewati tanggal akhir.' });
-  const items = db.prepare('SELECT * FROM transactions WHERE user_id=? AND date BETWEEN ? AND ? ORDER BY date DESC,id DESC').all(req.user.id, from, to);
+  const rows = db.prepare('SELECT * FROM transactions WHERE user_id=? AND date BETWEEN ? AND ? ORDER BY date DESC,id DESC').all(req.user.id, from, to);
+  const items = rows.map(row => ({ ...row, items: transactionLines(row.id, req.user.id) }));
   recordActivity(req, 'report_view', 'report', null, { from, to, count: items.length });
   const totalIn = items.filter(x => x.type === 'Masuk').reduce((s, x) => s + x.amount, 0);
   const totalOut = items.filter(x => x.type === 'Keluar').reduce((s, x) => s + x.amount, 0);
@@ -530,12 +888,14 @@ app.get('/api/reports', requireAuth, (req, res) => {
 });
 app.get('/api/settings/backup', requireAuth, (req, res) => {
   const id = req.user.id;
+  const transactions = db.prepare('SELECT id,date,description,type,amount FROM transactions WHERE user_id=? ORDER BY date,id').all(id)
+    .map(row => ({ ...row, items: transactionLines(row.id, id) }));
   const backup = {
-    format: 'buku-kas-backup-v1', exportedAt: new Date().toISOString(),
-    transactions: db.prepare('SELECT date,description,type,amount FROM transactions WHERE user_id=? ORDER BY date,id').all(id),
-    profits: db.prepare('SELECT date,description,type,amount FROM profits WHERE user_id=? ORDER BY date,id').all(id),
-    categories: db.prepare('SELECT name FROM categories WHERE user_id=? ORDER BY name').all(id),
-    products: db.prepare(`SELECT c.name AS category,p.name,p.stock,p.price FROM products p JOIN categories c ON c.id=p.category_id WHERE p.user_id=? ORDER BY c.name,p.name`).all(id)
+    format: 'buku-kas-backup-v2', exportedAt: new Date().toISOString(),
+    transactions,
+    profits: db.prepare('SELECT id,date,description,type,amount,source_transaction_id FROM profits WHERE user_id=? ORDER BY date,id').all(id),
+    categories: db.prepare('SELECT id,name FROM categories WHERE user_id=? ORDER BY name').all(id),
+    products: db.prepare(`SELECT p.id,c.name AS category,p.name,p.stock,p.price,p.unit_cost,p.sale_price,p.pricing_method,p.pricing_value FROM products p JOIN categories c ON c.id=p.category_id WHERE p.user_id=? ORDER BY c.name,p.name`).all(id)
   };
   recordActivity(req, 'backup_export', 'backup', null, { transactionCount: backup.transactions.length, productCount: backup.products.length });
   res.setHeader('Content-Disposition', `attachment; filename="buku-kas-backup-${new Date().toISOString().slice(0,10)}.json"`);
@@ -543,34 +903,65 @@ app.get('/api/settings/backup', requireAuth, (req, res) => {
 });
 app.post('/api/settings/restore', requireAuth, (req, res) => {
   const input = req.body.backup;
-  if (!input || input.format !== 'buku-kas-backup-v1' || !Array.isArray(input.transactions) || !Array.isArray(input.profits) || !Array.isArray(input.categories) || !Array.isArray(input.products)) {
+  const formatOk = input && ['buku-kas-backup-v1', 'buku-kas-backup-v2'].includes(input.format);
+  if (!formatOk || !Array.isArray(input.transactions) || !Array.isArray(input.profits) || !Array.isArray(input.categories) || !Array.isArray(input.products)) {
     return res.status(400).json({ error: 'Format file backup tidak dikenali.' });
   }
   if (input.transactions.length + input.profits.length + input.categories.length + input.products.length > 10000) return res.status(400).json({ error: 'Backup terlalu besar.' });
   const id = req.user.id;
   const restoreTx = db.transaction(() => {
-    db.prepare('DELETE FROM products WHERE user_id=?').run(id);
-    db.prepare('DELETE FROM categories WHERE user_id=?').run(id);
     db.prepare('DELETE FROM transactions WHERE user_id=?').run(id);
     db.prepare('DELETE FROM profits WHERE user_id=?').run(id);
+    db.prepare('DELETE FROM products WHERE user_id=?').run(id);
+    db.prepare('DELETE FROM categories WHERE user_id=?').run(id);
     const catIds = new Map();
+    const categoryOldToNew = new Map();
     for (const c of input.categories) {
       const name = validateName(c.name, 'Nama kategori');
       const r = db.prepare('INSERT INTO categories(user_id,name) VALUES(?,?)').run(id, name);
       catIds.set(name, Number(r.lastInsertRowid));
+      if (c.id != null) categoryOldToNew.set(Number(c.id), Number(r.lastInsertRowid));
     }
+    const productOldToNew = new Map();
     for (const p of input.products) {
       const categoryId = catIds.get(String(p.category));
-      const name = validateName(p.name, 'Nama barang'); const stock = Number(p.stock); const price = Number(p.price);
-      if (!categoryId || !Number.isSafeInteger(stock) || stock < 0 || !Number.isFinite(price) || price < 0) throw new Error('Data barang pada backup tidak valid.');
-      db.prepare('INSERT INTO products(user_id,category_id,name,stock,price) VALUES(?,?,?,?,?)').run(id, categoryId, name, stock, price);
+      const name = validateName(p.name, 'Nama barang'); const stock = Number(p.stock);
+      const unitCost = Number(p.unit_cost ?? 0);
+      const salePrice = Number(p.sale_price ?? p.price);
+      const pricingMethod = ['manual','markup','margin','fixed'].includes(p.pricing_method) ? p.pricing_method : 'manual';
+      const pricingValue = Number(p.pricing_value ?? 0);
+      if (!categoryId || !Number.isSafeInteger(stock) || stock < 0 || !Number.isFinite(unitCost) || unitCost < 0 || !Number.isFinite(salePrice) || salePrice < 0 || !Number.isFinite(pricingValue) || pricingValue < 0) throw new Error('Data barang pada backup tidak valid.');
+      const result = db.prepare(`INSERT INTO products(user_id,category_id,name,stock,price,unit_cost,sale_price,pricing_method,pricing_value)
+        VALUES(?,?,?,?,?,?,?,?,?)`).run(id, categoryId, name, stock, salePrice, unitCost, salePrice, pricingMethod, pricingValue);
+      if (p.id != null) productOldToNew.set(Number(p.id), Number(result.lastInsertRowid));
     }
-    for (const row of input.transactions) { const v = validateRecord(row); db.prepare('INSERT INTO transactions(user_id,date,description,type,amount) VALUES(?,?,?,?,?)').run(id,v.date,v.description,v.type,v.amount); }
-    for (const row of input.profits) { const v = validateRecord(row); db.prepare('INSERT INTO profits(user_id,date,description,type,amount) VALUES(?,?,?,?,?)').run(id,v.date,v.description,v.type,v.amount); }
+    const transactionOldToNew = new Map();
+    for (const row of input.transactions) {
+      const v = validateRecord(row);
+      const result = db.prepare('INSERT INTO transactions(user_id,date,description,type,amount) VALUES(?,?,?,?,?)').run(id,v.date,v.description,v.type,v.amount);
+      const newTransactionId = Number(result.lastInsertRowid);
+      if (row.id != null) transactionOldToNew.set(Number(row.id), newTransactionId);
+      if (input.format === 'buku-kas-backup-v2' && Array.isArray(row.items)) {
+        for (const line of row.items) {
+          const productId = line.product_id == null ? null : (productOldToNew.get(Number(line.product_id)) || null);
+          const quantity = Number(line.quantity); const unitSalePrice = Number(line.unit_sale_price);
+          const unitCost = Number(line.unit_cost); const lineTotal = Number(line.line_total); const lineProfit = Number(line.line_profit);
+          if (!Number.isSafeInteger(quantity) || quantity < 1 || ![unitSalePrice,unitCost,lineTotal,lineProfit].every(Number.isFinite) || unitSalePrice < 0 || unitCost < 0 || lineTotal < 0) throw new Error('Rincian barang transaksi pada backup tidak valid.');
+          db.prepare(`INSERT INTO transaction_items(user_id,transaction_id,product_id,product_name,quantity,unit_sale_price,unit_cost,line_total,line_profit)
+            VALUES(?,?,?,?,?,?,?,?,?)`).run(id,newTransactionId,productId,validateName(line.product_name,'Nama produk'),quantity,unitSalePrice,unitCost,lineTotal,lineProfit);
+        }
+      }
+    }
+    for (const row of input.profits) {
+      const v = validateRecord(row);
+      const sourceTransactionId = row.source_transaction_id == null ? null : (transactionOldToNew.get(Number(row.source_transaction_id)) || null);
+      db.prepare('INSERT INTO profits(user_id,date,description,type,amount,source_transaction_id) VALUES(?,?,?,?,?,?)')
+        .run(id,v.date,v.description,v.type,v.amount,sourceTransactionId);
+    }
   });
   try {
     restoreTx();
-    recordActivity(req, 'backup_restore', 'backup', null, { transactions: input.transactions.length, profits: input.profits.length, products: input.products.length });
+    recordActivity(req, 'backup_restore', 'backup', null, { transactions: input.transactions.length, profits: input.profits.length, products: input.products.length, format: input.format });
     res.json({ ok: true });
   } catch (err) { res.status(400).json({ error: dbErrorMessage(err) }); }
 });
@@ -581,19 +972,21 @@ app.get('/api/admin/overview', requireAdmin, (req, res) => {
   const cash = db.prepare(`SELECT COUNT(*) AS transactionCount, COALESCE(SUM(amount),0) AS transactionVolume FROM transactions`).get();
   const logs = db.prepare('SELECT l.*,u.name AS user_name FROM activity_logs l LEFT JOIN users u ON u.id=l.actor_user_id ORDER BY l.id DESC LIMIT 12').all();
   const profit = db.prepare(`SELECT COUNT(*) AS profitCount,COALESCE(SUM(amount),0) AS profitVolume FROM profits`).get();
+  recordActivity(req, 'admin_overview_view', 'admin');
   res.json({ users, cash, profit, recentActivity: logs });
 });
 app.get('/api/admin/users', requireAdmin, (req, res) => {
   const search = String(req.query.search || '').trim();
   const users = search
-    ? db.prepare(`SELECT u.id,u.name,u.email,u.role,u.is_active,u.created_at,
+    ? db.prepare(`SELECT u.id,u.name,u.email,u.role,u.is_active,u.email_verified_at,u.created_at,
       (SELECT COUNT(*) FROM transactions t WHERE t.user_id=u.id) AS transaction_count,
       (SELECT COUNT(*) FROM activity_logs l WHERE l.actor_user_id=u.id) AS activity_count
       FROM users u WHERE u.role='user' AND (u.name LIKE ? OR u.email LIKE ?) ORDER BY u.created_at DESC LIMIT 250`).all(`%${search}%`,`%${search}%`)
-    : db.prepare(`SELECT u.id,u.name,u.email,u.role,u.is_active,u.created_at,
+    : db.prepare(`SELECT u.id,u.name,u.email,u.role,u.is_active,u.email_verified_at,u.created_at,
       (SELECT COUNT(*) FROM transactions t WHERE t.user_id=u.id) AS transaction_count,
       (SELECT COUNT(*) FROM activity_logs l WHERE l.actor_user_id=u.id) AS activity_count
       FROM users u WHERE u.role='user' ORDER BY u.created_at DESC LIMIT 250`).all();
+  recordActivity(req, 'admin_users_list_view', 'admin', null, { resultCount: users.length });
   res.json({ items: users });
 });
 app.patch('/api/admin/users/:id', requireAdmin, (req, res) => {
@@ -601,16 +994,18 @@ app.patch('/api/admin/users/:id', requireAdmin, (req, res) => {
   const target = db.prepare("SELECT * FROM users WHERE id=? AND role='user'").get(id);
   if (!target) return res.status(404).json({ error: 'Pengguna tidak ditemukan.' });
   const name = req.body.name === undefined ? target.name : validateName(req.body.name);
+  if (req.body.isActive !== undefined && typeof req.body.isActive !== 'boolean') return res.status(400).json({ error: 'Status akun harus berupa boolean.' });
   const active = req.body.isActive === undefined ? target.is_active : (req.body.isActive ? 1 : 0);
-  db.prepare("UPDATE users SET name=?,is_active=?,updated_at=datetime('now') WHERE id=? AND role='user'").run(name, active, id);
+  db.prepare("UPDATE users SET name=?,is_active=?,session_version=session_version+CASE WHEN ?=0 THEN 1 ELSE 0 END,updated_at=datetime('now') WHERE id=? AND role='user'").run(name, active, active, id);
   recordActivity(req, 'admin_user_update', 'user', id, { name, isActive: Boolean(active), targetEmail: target.email });
   res.json({ item: safeUser(db.prepare('SELECT * FROM users WHERE id=?').get(id)) });
 });
 app.get('/api/admin/users/:id/data', requireAdmin, (req, res) => {
   const id = parseId(req.params.id); if (!id) return res.status(400).json({ error: 'ID tidak valid.' });
-  const user = db.prepare("SELECT id,name,email,role,is_active,created_at FROM users WHERE id=? AND role='user'").get(id);
+  const user = db.prepare("SELECT id,name,email,role,is_active,email_verified_at,created_at FROM users WHERE id=? AND role='user'").get(id);
   if (!user) return res.status(404).json({ error: 'Pengguna tidak ditemukan.' });
-  const transactions = db.prepare('SELECT * FROM transactions WHERE user_id=? ORDER BY date DESC,id DESC').all(id);
+  const transactionRows = db.prepare('SELECT * FROM transactions WHERE user_id=? ORDER BY date DESC,id DESC').all(id);
+  const transactions = transactionRows.map(row => ({ ...row, items: transactionLines(row.id, id) }));
   const profits = db.prepare('SELECT * FROM profits WHERE user_id=? ORDER BY date DESC,id DESC').all(id);
   const products = db.prepare('SELECT p.*,c.name AS category_name FROM products p JOIN categories c ON c.id=p.category_id WHERE p.user_id=? ORDER BY c.name,p.name').all(id);
   const categories = db.prepare('SELECT * FROM categories WHERE user_id=? ORDER BY name').all(id);
@@ -628,11 +1023,13 @@ app.get('/api/admin/logs', requireAdmin, (req, res) => {
   if (userId) { sql += ' AND l.actor_user_id=?'; args.push(userId); }
   if (action) { sql += ' AND l.action LIKE ?'; args.push(`%${action}%`); }
   sql += ' ORDER BY l.id DESC LIMIT ? OFFSET ?'; args.push(limit, offset);
-  res.json({ items: db.prepare(sql).all(...args) });
+  const items = db.prepare(sql).all(...args);
+  recordActivity(req, 'admin_activity_log_view', 'admin', null, { resultCount: items.length, limit, offset });
+  res.json({ items });
 });
 
 // Frontend shell. /admin/login is an entirely separate credential entry point.
-app.get(['/','/admin','/admin/login'], (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get(['/','/admin','/admin/login','/forgot-password','/verify-email','/reset-password'], (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 app.get('/healthz', (req, res) => res.json({ ok: true, service: 'buku-kas-website' }));
 app.use('/api', (req, res) => res.status(404).json({ error: 'Endpoint tidak ditemukan.' }));
 app.use((err, req, res, next) => {
@@ -648,5 +1045,6 @@ if (process.env.NODE_ENV === 'production' && (!process.env.SESSION_SECRET || pro
 app.listen(PORT, HOST, () => {
   console.log(`Buku Kas Website berjalan di ${HOST}:${PORT}`);
   console.log(`URL konfigurasi OAuth: ${BASE_URL}/auth/google/callback`);
-  console.log(`Google OAuth: ${googleReady ? 'aktif' : 'belum dikonfigurasi'}`);
+  console.log(`Google OAuth: ${googleReady ? 'aktif' : 'ditunda/nonaktif'}`);
+  console.log(`Email delivery: ${emailDeliveryReady() ? emailProvider : 'belum dikonfigurasi'}`);
 });

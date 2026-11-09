@@ -43,12 +43,13 @@ try {
       }
       categoryMap.set(Number(c.id), existing.id);
     }
-    const insertProduct = target.prepare('INSERT INTO products(user_id,category_id,name,stock,price) VALUES(?,?,?,?,?)');
+    const insertProduct = target.prepare(`INSERT INTO products(user_id,category_id,name,stock,price,unit_cost,sale_price,pricing_method,pricing_value) VALUES(?,?,?,?,?,0,?,'manual',0)`);
     let productCount = 0;
     for (const p of barang) {
       const categoryId = categoryMap.get(Number(p.kategori_id));
       if (!categoryId) continue;
-      insertProduct.run(user.id, categoryId, String(p.nama || 'Barang impor').trim().slice(0,100), Math.max(0, Math.trunc(Number(p.stok) || 0)), Math.max(0, Number(p.harga) || 0));
+      const legacyPrice = Math.max(0, Number(p.harga) || 0);
+      insertProduct.run(user.id, categoryId, String(p.nama || 'Barang impor').trim().slice(0,100), Math.max(0, Math.trunc(Number(p.stok) || 0)), legacyPrice, legacyPrice);
       productCount++;
     }
     const insertLedger = (table, rows) => {

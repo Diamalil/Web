@@ -1,7 +1,25 @@
+# Dependencies
 node_modules/
+
+# Environment
 .env
-/data/*.sqlite
-/data/*.sqlite-shm
-/data/*.sqlite-wal
+.env.*
+!.env.example
+
+# Database
+**/*.sqlite
+**/*.sqlite-*
+**/*.db
+**/*.db-*
+
+# Backup folders
+**/backup/
+**/backups/
+**/data-backup/
+
+# Logs
 *.log
+
+# OS files
 .DS_Store
+Thumbs.db
