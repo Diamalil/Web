@@ -103,6 +103,16 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_purpose ON auth_tokens(user_id,purpose);
+CREATE TABLE IF NOT EXISTS robot_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  token_prefix TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_used_at TEXT,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_robot_tokens_user_active ON robot_tokens(user_id,revoked_at);
 CREATE TRIGGER IF NOT EXISTS products_category_owner_insert
 BEFORE INSERT ON products
 WHEN NOT EXISTS (SELECT 1 FROM categories WHERE id=NEW.category_id AND user_id=NEW.user_id)
@@ -125,6 +135,7 @@ ensureColumn('products', 'unit_cost', 'REAL NOT NULL DEFAULT 0');
 ensureColumn('products', 'sale_price', 'REAL NOT NULL DEFAULT 0');
 ensureColumn('products', 'pricing_method', "TEXT NOT NULL DEFAULT 'manual'");
 ensureColumn('products', 'pricing_value', 'REAL NOT NULL DEFAULT 0');
+ensureColumn('products', 'minimum_stock', 'INTEGER NOT NULL DEFAULT 5 CHECK(minimum_stock >= 0)');
 ensureColumn('profits', 'source_transaction_id', 'INTEGER REFERENCES transactions(id) ON DELETE CASCADE');
 // Preserve the old product price as the sale price for existing records.
  db.exec('UPDATE products SET sale_price=price WHERE sale_price=0 AND price>0');
@@ -343,6 +354,21 @@ function requireAuth(req, res, next) {
   if (!user || !user.is_active) return res.status(401).json({ error: 'Silakan login kembali.' });
   if (user.role !== 'user') return res.status(403).json({ error: 'Endpoint ini khusus akun pengguna.' });
   req.user = user;
+  next();
+}
+function requireRobotAuth(req, res, next) {
+  const authorization = String(req.get('authorization') || '');
+  const match = authorization.match(/^Bearer\s+([A-Za-z0-9_-]{40,100})$/i);
+  if (!match) return res.status(401).json({ error: 'Token robot tidak valid atau tidak tersedia.' });
+  const tokenHash = crypto.createHash('sha256').update(match[1]).digest('hex');
+  const token = db.prepare(`SELECT rt.id,rt.user_id,u.email,u.is_active,u.role
+    FROM robot_tokens rt JOIN users u ON u.id=rt.user_id
+    WHERE rt.token_hash=? AND rt.revoked_at IS NULL`).get(tokenHash);
+  if (!token || !token.is_active || token.role !== 'user') {
+    return res.status(401).json({ error: 'Token robot tidak aktif atau sudah dicabut.' });
+  }
+  db.prepare("UPDATE robot_tokens SET last_used_at=datetime('now') WHERE id=?").run(token.id);
+  req.robotUser = { id: token.user_id, email: token.email };
   next();
 }
 
@@ -837,9 +863,11 @@ app.post('/api/products', requireAuth, (req, res) => {
   try {
     const categoryId = parseId(req.body.categoryId); const name = validateName(req.body.name, 'Nama barang');
     const pricing = calculateProductPricing(req.body);
+    const minimumStock = Number(req.body.minimumStock ?? 5);
+    if (!Number.isSafeInteger(minimumStock) || minimumStock < 0 || minimumStock > 1_000_000_000) throw new Error('Batas minimum stok harus berupa bilangan bulat dari 0 sampai 1.000.000.000.');
     if (!categoryId || !db.prepare('SELECT id FROM categories WHERE id=? AND user_id=?').get(categoryId, req.user.id)) return res.status(400).json({ error: 'Kategori tidak valid.' });
-    const result = db.prepare(`INSERT INTO products(user_id,category_id,name,price,unit_cost,sale_price,pricing_method,pricing_value)
-      VALUES(?,?,?,?,?,?,?,?)`).run(req.user.id, categoryId, name, pricing.salePrice, pricing.unitCost, pricing.salePrice, pricing.pricingMethod, pricing.pricingValue);
+    const result = db.prepare(`INSERT INTO products(user_id,category_id,name,price,unit_cost,sale_price,pricing_method,pricing_value,minimum_stock)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run(req.user.id, categoryId, name, pricing.salePrice, pricing.unitCost, pricing.salePrice, pricing.pricingMethod, pricing.pricingValue, minimumStock);
     recordActivity(req, 'product_create', 'product', result.lastInsertRowid, { name, ...pricing, categoryId });
     res.status(201).json({ item: db.prepare('SELECT p.*,c.name AS category_name FROM products p JOIN categories c ON c.id=p.category_id WHERE p.id=? AND p.user_id=?').get(result.lastInsertRowid, req.user.id) });
   } catch (err) { res.status(400).json({ error: dbErrorMessage(err) }); }
@@ -848,9 +876,11 @@ app.put('/api/products/:id', requireAuth, (req, res) => {
   try {
     const id = parseId(req.params.id); const categoryId = parseId(req.body.categoryId); const name = validateName(req.body.name, 'Nama barang');
     const pricing = calculateProductPricing(req.body);
+    const minimumStock = Number(req.body.minimumStock ?? 5);
+    if (!Number.isSafeInteger(minimumStock) || minimumStock < 0 || minimumStock > 1_000_000_000) throw new Error('Batas minimum stok harus berupa bilangan bulat dari 0 sampai 1.000.000.000.');
     if (!id || !categoryId || !db.prepare('SELECT id FROM categories WHERE id=? AND user_id=?').get(categoryId, req.user.id)) return res.status(400).json({ error: 'ID atau kategori tidak valid.' });
-    const result = db.prepare(`UPDATE products SET category_id=?,name=?,price=?,unit_cost=?,sale_price=?,pricing_method=?,pricing_value=?,updated_at=datetime('now')
-      WHERE id=? AND user_id=?`).run(categoryId, name, pricing.salePrice, pricing.unitCost, pricing.salePrice, pricing.pricingMethod, pricing.pricingValue, id, req.user.id);
+    const result = db.prepare(`UPDATE products SET category_id=?,name=?,price=?,unit_cost=?,sale_price=?,pricing_method=?,pricing_value=?,minimum_stock=?,updated_at=datetime('now')
+      WHERE id=? AND user_id=?`).run(categoryId, name, pricing.salePrice, pricing.unitCost, pricing.salePrice, pricing.pricingMethod, pricing.pricingValue, minimumStock, id, req.user.id);
     if (!result.changes) return res.status(404).json({ error: 'Barang tidak ditemukan.' });
     recordActivity(req, 'product_update', 'product', id, { name, ...pricing, categoryId });
     res.json({ item: db.prepare('SELECT p.*,c.name AS category_name FROM products p JOIN categories c ON c.id=p.category_id WHERE p.id=? AND p.user_id=?').get(id, req.user.id) });
@@ -886,6 +916,78 @@ app.get('/api/reports', requireAuth, (req, res) => {
   const totalOut = items.filter(x => x.type === 'Keluar').reduce((s, x) => s + x.amount, 0);
   res.json({ items, totalIn, totalOut, balance: totalIn - totalOut, from, to });
 });
+// ---------- ROBOT INTEGRATION ----------
+app.get('/api/robot/token', requireAuth, (req, res) => {
+  const token = db.prepare(`SELECT id,token_prefix,created_at,last_used_at
+    FROM robot_tokens WHERE user_id=? AND revoked_at IS NULL
+    ORDER BY id DESC LIMIT 1`).get(req.user.id);
+  res.json({ enabled: Boolean(token), token: token || null });
+});
+app.post('/api/robot/token', requireAuth, (req, res) => {
+  const tokenValue = crypto.randomBytes(32).toString('base64url');
+  const tokenHash = crypto.createHash('sha256').update(tokenValue).digest('hex');
+  const tokenPrefix = tokenValue.slice(0, 8);
+  const create = db.transaction(() => {
+    db.prepare("UPDATE robot_tokens SET revoked_at=datetime('now') WHERE user_id=? AND revoked_at IS NULL").run(req.user.id);
+    return db.prepare('INSERT INTO robot_tokens(user_id,token_hash,token_prefix) VALUES(?,?,?)')
+      .run(req.user.id, tokenHash, tokenPrefix);
+  });
+  const result = create();
+  recordActivity(req, 'robot_token_create', 'integration', result.lastInsertRowid, { tokenPrefix });
+  res.status(201).json({
+    token: tokenValue,
+    tokenInfo: { id: Number(result.lastInsertRowid), token_prefix: tokenPrefix, created_at: new Date().toISOString() },
+    warning: 'Token hanya ditampilkan sekali. Simpan di UiPath Orchestrator Assets dan jangan kirim ke GitHub.'
+  });
+});
+app.delete('/api/robot/token', requireAuth, (req, res) => {
+  const result = db.prepare("UPDATE robot_tokens SET revoked_at=datetime('now') WHERE user_id=? AND revoked_at IS NULL").run(req.user.id);
+  recordActivity(req, 'robot_token_revoke', 'integration', null, { revokedCount: result.changes });
+  res.json({ ok: true, revokedCount: result.changes });
+});
+
+// Satu paket data terstruktur untuk sinkronisasi ke spreadsheet online.
+app.get('/api/robot/v1/export', requireRobotAuth, (req, res) => {
+  const from = String(req.query.from || '');
+  const to = String(req.query.to || '');
+  if (!validDate(from) || !validDate(to)) return res.status(400).json({ error: 'Parameter from dan to wajib menggunakan format YYYY-MM-DD.' });
+  if (from > to) return res.status(400).json({ error: 'Tanggal awal tidak boleh melewati tanggal akhir.' });
+
+  const userId = req.robotUser.id;
+  const transactionRows = db.prepare(`SELECT * FROM transactions
+    WHERE user_id=? AND date BETWEEN ? AND ? ORDER BY date ASC,id ASC`).all(userId, from, to);
+  const transactions = transactionRows.map(row => ({ ...row, items: transactionLines(row.id, userId) }));
+  const profits = db.prepare(`SELECT id,date,description,type,amount,source_transaction_id
+    FROM profits WHERE user_id=? AND date BETWEEN ? AND ? ORDER BY date ASC,id ASC`).all(userId, from, to);
+  const products = db.prepare(`SELECT p.id,p.name,p.stock,p.minimum_stock,p.unit_cost,p.sale_price,
+    p.pricing_method,p.pricing_value,c.name AS category_name
+    FROM products p JOIN categories c ON c.id=p.category_id AND c.user_id=p.user_id
+    WHERE p.user_id=? ORDER BY c.name COLLATE NOCASE,p.name COLLATE NOCASE`).all(userId)
+    .map(product => ({ ...product, is_low_stock: product.stock <= product.minimum_stock }));
+
+  const totalIn = transactions.filter(item => item.type === 'Masuk').reduce((sum, item) => sum + item.amount, 0);
+  const totalOut = transactions.filter(item => item.type === 'Keluar').reduce((sum, item) => sum + item.amount, 0);
+  const profitIn = profits.filter(item => item.type === 'Masuk').reduce((sum, item) => sum + item.amount, 0);
+  const profitOut = profits.filter(item => item.type === 'Keluar').reduce((sum, item) => sum + item.amount, 0);
+  recordActivity(req, 'robot_export', 'report', null, {
+    from, to, transactionCount: transactions.length, profitCount: profits.length, productCount: products.length
+  }, { id: userId, email: req.robotUser.email });
+
+  res.json({
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    period: { from, to },
+    summary: {
+      totalIn, totalOut, balance: totalIn - totalOut,
+      profitIn, profitOut, profitBalance: profitIn - profitOut,
+      transactionCount: transactions.length, profitCount: profits.length, productCount: products.length
+    },
+    transactions,
+    profits,
+    products
+  });
+});
+
 app.get('/api/settings/backup', requireAuth, (req, res) => {
   const id = req.user.id;
   const transactions = db.prepare('SELECT id,date,description,type,amount FROM transactions WHERE user_id=? ORDER BY date,id').all(id)
@@ -895,7 +997,7 @@ app.get('/api/settings/backup', requireAuth, (req, res) => {
     transactions,
     profits: db.prepare('SELECT id,date,description,type,amount,source_transaction_id FROM profits WHERE user_id=? ORDER BY date,id').all(id),
     categories: db.prepare('SELECT id,name FROM categories WHERE user_id=? ORDER BY name').all(id),
-    products: db.prepare(`SELECT p.id,c.name AS category,p.name,p.stock,p.price,p.unit_cost,p.sale_price,p.pricing_method,p.pricing_value FROM products p JOIN categories c ON c.id=p.category_id WHERE p.user_id=? ORDER BY c.name,p.name`).all(id)
+    products: db.prepare(`SELECT p.id,c.name AS category,p.name,p.stock,p.minimum_stock,p.price,p.unit_cost,p.sale_price,p.pricing_method,p.pricing_value FROM products p JOIN categories c ON c.id=p.category_id WHERE p.user_id=? ORDER BY c.name,p.name`).all(id)
   };
   recordActivity(req, 'backup_export', 'backup', null, { transactionCount: backup.transactions.length, productCount: backup.products.length });
   res.setHeader('Content-Disposition', `attachment; filename="buku-kas-backup-${new Date().toISOString().slice(0,10)}.json"`);
@@ -930,9 +1032,10 @@ app.post('/api/settings/restore', requireAuth, (req, res) => {
       const salePrice = Number(p.sale_price ?? p.price);
       const pricingMethod = ['manual','markup','margin','fixed'].includes(p.pricing_method) ? p.pricing_method : 'manual';
       const pricingValue = Number(p.pricing_value ?? 0);
-      if (!categoryId || !Number.isSafeInteger(stock) || stock < 0 || !Number.isFinite(unitCost) || unitCost < 0 || !Number.isFinite(salePrice) || salePrice < 0 || !Number.isFinite(pricingValue) || pricingValue < 0) throw new Error('Data barang pada backup tidak valid.');
-      const result = db.prepare(`INSERT INTO products(user_id,category_id,name,stock,price,unit_cost,sale_price,pricing_method,pricing_value)
-        VALUES(?,?,?,?,?,?,?,?,?)`).run(id, categoryId, name, stock, salePrice, unitCost, salePrice, pricingMethod, pricingValue);
+      const minimumStock = Number(p.minimum_stock ?? 5);
+      if (!categoryId || !Number.isSafeInteger(stock) || stock < 0 || !Number.isSafeInteger(minimumStock) || minimumStock < 0 || !Number.isFinite(unitCost) || unitCost < 0 || !Number.isFinite(salePrice) || salePrice < 0 || !Number.isFinite(pricingValue) || pricingValue < 0) throw new Error('Data barang pada backup tidak valid.');
+      const result = db.prepare(`INSERT INTO products(user_id,category_id,name,stock,price,unit_cost,sale_price,pricing_method,pricing_value,minimum_stock)
+        VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id, categoryId, name, stock, salePrice, unitCost, salePrice, pricingMethod, pricingValue, minimumStock);
       if (p.id != null) productOldToNew.set(Number(p.id), Number(result.lastInsertRowid));
     }
     const transactionOldToNew = new Map();

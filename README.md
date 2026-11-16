@@ -324,3 +324,77 @@ Transaksi yang diedit akan mengembalikan stok dari baris sebelumnya, memperbarui
 5. Hapus transaksi. Hasil: stok dikembalikan dan keuntungan otomatis terkait dihapus.
 6. Uji produk milik user lain dan stok tidak cukup. Server harus menolak transaksi tanpa mengubah saldo, stok, atau keuntungan.
 7. Backup dan restore format v2 pada akun pengujian; rincian penjualan dan tautan margin harus tetap konsisten.
+
+## 13. Fondasi integrasi UiPath (branch otomatisasi)
+
+Branch `feature/uipath-automation-foundation` menambahkan fondasi awal agar UiPath dapat membaca data Buku Kas tanpa memakai session login browser.
+
+### Batas minimum stok
+
+- Produk sekarang memiliki kolom `minimum_stock`, default 5 unit.
+- Form tambah/edit produk menyediakan input batas minimum.
+- Tampilan katalog menandai produk saat `stock <= minimum_stock`.
+- Backup dan restore JSON membawa nilai batas minimum (file backup lama tetap dipulihkan dengan default 5).
+
+Penanda di halaman stok ini belum mengirim WhatsApp. Pengiriman notifikasi memerlukan antrean notifikasi dan konfigurasi WhatsApp Business Platform pada tahap berikutnya.
+
+### Token robot
+
+Pengguna dapat membuka **Pengaturan → Integrasi Robot UiPath → Buat Token Robot**.
+
+- Token dibuat acak dan hanya ditampilkan satu kali.
+- Database hanya menyimpan SHA-256 hash token, bukan token mentah.
+- Membuat token baru otomatis mencabut token aktif sebelumnya.
+- Token dapat dicabut dari halaman Pengaturan.
+- Simpan token di Credential/Assets UiPath Orchestrator. Jangan menaruh token di project XAML, source code, file konfigurasi yang masuk Git, atau screenshot publik.
+
+### Endpoint ekspor robot
+
+```http
+GET /api/robot/v1/export?from=2026-11-01&to=2026-11-30
+Authorization: Bearer <TOKEN_ROBOT>
+```
+
+Kedua parameter tanggal wajib memakai format `YYYY-MM-DD`. API hanya mengembalikan data milik akun yang menerbitkan token tersebut.
+
+Respons JSON memiliki struktur utama:
+
+```json
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-16T03:00:00.000Z",
+  "period": { "from": "2026-11-01", "to": "2026-11-30" },
+  "summary": {
+    "totalIn": 0,
+    "totalOut": 0,
+    "balance": 0,
+    "profitIn": 0,
+    "profitOut": 0,
+    "profitBalance": 0,
+    "transactionCount": 0,
+    "profitCount": 0,
+    "productCount": 0
+  },
+  "transactions": [],
+  "profits": [],
+  "products": []
+}
+```
+
+Setiap transaksi dan catatan keuntungan memiliki `id` stabil. Produk memiliki `id`, `stock`, `minimum_stock`, dan `is_low_stock`. Gunakan ID sebagai kunci unik ketika menyinkronkan Google Sheets: perbarui baris yang sudah ada ketika transaksi diedit, jangan selalu menambahkan baris baru. Produk yang dihapus perlu ditangani sebagai sinkronisasi katalog tersendiri.
+
+### Workflow UiPath yang disarankan
+
+1. Buat proses UiPath baru, misalnya `RekapHarian`.
+2. Simpan base URL website dan token di Orchestrator Assets/Credentials.
+3. Gunakan HTTP Request ke endpoint ekspor dengan tanggal awal dan akhir.
+4. Tambahkan header `Authorization: Bearer <TOKEN_ROBOT>`.
+5. Deserialisasi respons JSON, lalu bentuk DataTable untuk tab Ringkasan, Transaksi, Keuntungan, dan Stok Barang.
+6. Sinkronkan Google Sheets berdasarkan ID data; gunakan upsert untuk transaksi dan keuntungan.
+7. Catat jumlah baris yang dibaca, dibuat, diperbarui, serta waktu sinkronisasi.
+
+Untuk pengembangan pertama, uji pemanggilan API dari Postman atau HTTP Request UiPath sebelum menghubungkan Google Sheets. Endpoint ini membaca data saja dan tidak dapat mengubah transaksi.
+
+### Batasan tahap ini
+
+Integrasi Google Sheets yang menulis spreadsheet, WhatsApp Cloud API, antrean notifikasi stok, dan payment gateway belum diaktifkan oleh perubahan ini. Fondasi API dan pengaturan batas stok sudah tersedia; modul-modul tersebut akan dibuat pada tahap berikutnya.
