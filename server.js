@@ -358,7 +358,7 @@ function requireAuth(req, res, next) {
 }
 function requireRobotAuth(req, res, next) {
   const authorization = String(req.get('authorization') || '');
-  const match = authorization.match(/^Bearer\\s+([A-Za-z0-9_-]{40,100})$/i);
+  const match = authorization.match(/^Bearer\s+([A-Za-z0-9_-]{40,100})$/i);
   if (!match) return res.status(401).json({ error: 'Token robot tidak valid atau tidak tersedia.' });
   const tokenHash = crypto.createHash('sha256').update(match[1]).digest('hex');
   const token = db.prepare(`SELECT rt.id,rt.user_id,u.email,u.is_active,u.role
@@ -997,7 +997,7 @@ app.get('/api/settings/backup', requireAuth, (req, res) => {
     transactions,
     profits: db.prepare('SELECT id,date,description,type,amount,source_transaction_id FROM profits WHERE user_id=? ORDER BY date,id').all(id),
     categories: db.prepare('SELECT id,name FROM categories WHERE user_id=? ORDER BY name').all(id),
-    products: db.prepare(`SELECT p.id,c.name AS category,p.name,p.stock,p.price,p.unit_cost,p.sale_price,p.pricing_method,p.pricing_value FROM products p JOIN categories c ON c.id=p.category_id WHERE p.user_id=? ORDER BY c.name,p.name`).all(id)
+    products: db.prepare(`SELECT p.id,c.name AS category,p.name,p.stock,p.minimum_stock,p.price,p.unit_cost,p.sale_price,p.pricing_method,p.pricing_value FROM products p JOIN categories c ON c.id=p.category_id WHERE p.user_id=? ORDER BY c.name,p.name`).all(id)
   };
   recordActivity(req, 'backup_export', 'backup', null, { transactionCount: backup.transactions.length, productCount: backup.products.length });
   res.setHeader('Content-Disposition', `attachment; filename="buku-kas-backup-${new Date().toISOString().slice(0,10)}.json"`);
@@ -1032,9 +1032,10 @@ app.post('/api/settings/restore', requireAuth, (req, res) => {
       const salePrice = Number(p.sale_price ?? p.price);
       const pricingMethod = ['manual','markup','margin','fixed'].includes(p.pricing_method) ? p.pricing_method : 'manual';
       const pricingValue = Number(p.pricing_value ?? 0);
-      if (!categoryId || !Number.isSafeInteger(stock) || stock < 0 || !Number.isFinite(unitCost) || unitCost < 0 || !Number.isFinite(salePrice) || salePrice < 0 || !Number.isFinite(pricingValue) || pricingValue < 0) throw new Error('Data barang pada backup tidak valid.');
-      const result = db.prepare(`INSERT INTO products(user_id,category_id,name,stock,price,unit_cost,sale_price,pricing_method,pricing_value)
-        VALUES(?,?,?,?,?,?,?,?,?)`).run(id, categoryId, name, stock, salePrice, unitCost, salePrice, pricingMethod, pricingValue);
+      const minimumStock = Number(p.minimum_stock ?? 5);
+      if (!categoryId || !Number.isSafeInteger(stock) || stock < 0 || !Number.isSafeInteger(minimumStock) || minimumStock < 0 || !Number.isFinite(unitCost) || unitCost < 0 || !Number.isFinite(salePrice) || salePrice < 0 || !Number.isFinite(pricingValue) || pricingValue < 0) throw new Error('Data barang pada backup tidak valid.');
+      const result = db.prepare(`INSERT INTO products(user_id,category_id,name,stock,price,unit_cost,sale_price,pricing_method,pricing_value,minimum_stock)
+        VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id, categoryId, name, stock, salePrice, unitCost, salePrice, pricingMethod, pricingValue, minimumStock);
       if (p.id != null) productOldToNew.set(Number(p.id), Number(result.lastInsertRowid));
     }
     const transactionOldToNew = new Map();
