@@ -1,6 +1,6 @@
 # Buku Kas Website
 
-Versi website dari aplikasi Flutter Buku Kas. Aplikasi memakai Supabase Auth untuk identitas pengguna, email/password, verifikasi email, pemulihan akun, dan Google sign-in. Backend Express memvalidasi access token Supabase dan saat ini masih memakai SQLite untuk data operasional lama (transaksi, keuntungan, stok, dan laporan). Schema PostgreSQL FeeKu disiapkan terpisah untuk migrasi data operasional berikutnya.
+Versi website dari aplikasi Flutter Buku Kas. Supabase Auth mengelola identitas pengguna, email/password, verifikasi email, pemulihan akun, dan Google sign-in. Seluruh data bisnis website (transaksi, keuntungan, katalog, stok, laporan, dan audit aktivitas) disimpan di PostgreSQL FeeKu melalui Supabase PostgREST dengan RLS berbasis UUID akun. SQLite di server hanya menyimpan cache akun lokal dan session; data bisnis lama dipindahkan dengan migrator satu kali yang aman dan dapat diulang.
 
 ## 1. Hasil bedah aplikasi asli
 
@@ -45,18 +45,22 @@ Browser
   └── Supabase JS SDK (publishable key)
         │  Supabase Auth session / Bearer access token
         ▼
-Node.js / Express (server.js)
-  ├── validasi token melalui Supabase Auth
-  ├── email/password + verifikasi + reset + Google OAuth
-  ├── role guard berdasarkan app_metadata.role yang dikelola server
-  ├── pembatasan jaringan untuk seluruh endpoint admin
-  ├── REST API transaksi / keuntungan / stok / laporan
-  └── activity_logs (audit trail)
+Node.js / Express
+  ├── validasi access token ke Supabase Auth
+  ├── role guard dari app_metadata.role + IP allowlist admin
+  ├── endpoint bisnis melalui PostgREST (JWT pengguna + RLS)
+  ├── RPC PostgreSQL untuk transaksi penjualan, stok, dan restore
+  └── SQLite: cache users + express-session saja
+        │
         ▼
-SQLite di server (data/buku-kas.sqlite)
+Supabase PostgreSQL FeeKu
+  ├── profiles, categories, products
+  ├── transactions, transaction_items, profits
+  ├── activity_logs
+  └── payment orders / settlements / refunds
 ```
 
-Semua tabel data bisnis memiliki `user_id`. Query untuk pengguna selalu dibatasi berdasarkan ID akun dari session server, bukan ID yang dikirim dari browser. Administrator mempunyai endpoint baca lintas pengguna yang berbeda dan endpoint pengelolaan status pengguna.
+Semua tabel bisnis PostgreSQL memiliki `user_id` UUID dan RLS membatasi akses berdasarkan `auth.uid()`. API mengirim Bearer JWT pengguna ke PostgREST; ID kepemilikan tidak pernah dipercaya dari body/query browser. ID numerik lama tetap dipertahankan pada API melalui kolom `legacy_id`, sedangkan relasi database memakai UUID. Akses admin lintas akun menggunakan secret key di server saja dan tetap melalui middleware role serta IP allowlist.
 
 ## 4. Menjalankan lokal
 
@@ -67,12 +71,16 @@ cd website
 npm install
 ```
 
-Buat file `.env` dari `.env.example`, lalu isi `SESSION_SECRET` dengan nilai acak panjang minimal 32 karakter. Contoh pengembangan lokal:
+Buat file `.env` dari `.env.example`. Isi `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, dan `SESSION_SECRET`. Publishable key boleh dipakai frontend; `SUPABASE_SECRET_KEY` hanya untuk server dan tidak boleh dimasukkan ke frontend atau Git. Contoh pengembangan lokal:
 
 ```env
 NODE_ENV=development
 PORT=3000
 HOST=0.0.0.0
+SUPABASE_URL=https://dvtnxezautjkeshsbdyk.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+SUPABASE_SECRET_KEY=sb_secret_...
+ENABLE_GOOGLE_OAUTH=true
 SESSION_SECRET=ganti-dengan-random-secret-panjang-minimal-32-karakter
 APP_BASE_URL=http://localhost:3000
 ```
@@ -89,11 +97,35 @@ Buka:
 - Admin: `http://localhost:3000/admin/login`
 - Health check: `http://localhost:3000/healthz`
 
-## 5. Membuat akun administrator
+## 5. Migrasi data bisnis SQLite ke PostgreSQL
+
+Endpoint transaksi, keuntungan, kategori, produk, stok, laporan, backup/restore per akun, dan log aktivitas kini memakai PostgreSQL. File SQLite lama tetap diperlukan sementara untuk membaca akun/cache lokal. Migrasi data per akun dijalankan dari mesin/server yang menyimpan `data/buku-kas.sqlite`; file database tersebut tidak disertakan di repository.
+
+1. Buat salinan cadangan aman dari `data/buku-kas.sqlite` dan jangan hapus file SQLite.
+2. Jalankan `npm start` sekali agar kolom status migrasi ditambahkan pada database lokal lama, lalu hentikan server.
+3. Pastikan akun lama sudah tertaut ke Supabase Auth dan emailnya terverifikasi. Pengguna perlu login sekali dengan alamat email yang sama; akun lama yang belum terverifikasi perlu ditinjau sebelum dipindahkan.
+4. Jalankan dry-run terlebih dahulu:
+
+```bash
+npm run migrate:postgres
+```
+
+5. Periksa daftar akun dan hitungan kategori, produk, transaksi, item transaksi, keuntungan, serta log. Jika ada akun belum tertaut/terverifikasi, selesaikan dulu. Jangan menghapus database sumber.
+6. Setelah hasil dry-run benar, jalankan import:
+
+```bash
+npm run migrate:postgres -- --apply
+```
+
+Script menggunakan `SUPABASE_SECRET_KEY` hanya dari environment server, memverifikasi profil Supabase, lalu memanggil RPC import yang dibatasi untuk `service_role`. Tiap akun diproses secara atomik. Marker import mencegah duplikasi; proses bisa diulang setelah kegagalan. Flag `business_migrated` lokal hanya diaktifkan setelah PostgreSQL mengonfirmasi import. Sampai saat itu, endpoint bisnis akun lama menolak akses agar akun tidak melihat data kosong atau data yang belum lengkap.
+
+Import tidak menimpa data PostgreSQL yang sudah ada. Jika tujuan memiliki data bisnis dan belum memiliki marker import, proses dibatalkan. Pertahankan file SQLite dan backup-nya sampai data hasil migrasi diperiksa melalui aplikasi.
+
+## 6. Membuat akun administrator
 
 **Panduan terbaru:** administrator dibuat melalui Supabase Auth, bukan akun lokal SQLite. Buat akun pengguna biasa terlebih dahulu, verifikasi email, lalu jalankan `npm run create-admin -- admin@domain.com` menggunakan `SUPABASE_SECRET_KEY` di environment server. Lihat bagian **Supabase Auth Integration (current)** di bagian bawah dokumen ini untuk detail provisioning dan pencabutan akses.
 
-## 6. Kebijakan jaringan login admin
+## 7. Kebijakan jaringan login admin
 
 Panel admin memiliki dua lapisan proteksi:
 
@@ -110,12 +142,12 @@ ADMIN_ALLOWED_CIDRS=127.0.0.1/8,::1/128,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,
 
 Untuk akses melalui reverse proxy, set `TRUST_PROXY=1` hanya bila tepat satu proxy tepercaya berada di depan aplikasi. Jangan mempercayai header IP dari proxy yang tidak Anda kendalikan. Gunakan HTTPS di server publik.
 
-## 7. Login Google
+## 8. Login Google
 
 Google sign-in sekarang menggunakan Supabase Auth. Jangan gunakan `/auth/google/callback` milik Passport lama. Ikuti langkah pada bagian **Google sign-in activation** di bagian bawah dokumen ini, termasuk callback Supabase `https://dvtnxezautjkeshsbdyk.supabase.co/auth/v1/callback`.
 
 
-## 8. Deployment internet
+## 9. Deployment internet
 
 Deploy pada VPS atau server Node.js yang memiliki penyimpanan persisten. Contoh konfigurasi production:
 
@@ -133,7 +165,7 @@ SESSION_DATABASE_FILE=./data/sessions.sqlite
 
 Letakkan Nginx/Caddy di depan server untuk TLS/HTTPS dan teruskan request ke port aplikasi. Pastikan folder `data/` mempunyai izin tulis dan berada di disk persisten. Atur firewall agar port aplikasi tidak diekspos langsung ke internet bila memakai reverse proxy. Simpan backup database di lokasi terpisah secara berkala.
 
-## 9. Migrasi data dari aplikasi Flutter lama
+## 10. Migrasi data dari aplikasi Flutter lama
 
 Data lama tidak otomatis muncul di website karena file SQLite lama berada di penyimpanan perangkat masing-masing. Website menyertakan script untuk mengimpor file backup `.db` dari fitur Backup aplikasi Flutter:
 
@@ -155,25 +187,25 @@ node scripts/import-legacy-sqlite.js pengguna@email.com 'C:\path\buku_kas.db'
 Remove-Item Env:LEGACY_IMPORT_CONFIRM
 ```
 
-Import menambahkan data Buku Kas, keuntungan, kategori, dan barang ke akun tujuan. Script tidak menghapus data akun yang sudah ada. Jalankan hanya sekali untuk menghindari duplikasi.
+Import ini memasukkan backup aplikasi Flutter lama ke database SQLite website untuk tahap transisi. Setelah itu jalankan dry-run dan `npm run migrate:postgres` seperti bagian 5 agar seluruh data bisnis website dipindahkan ke PostgreSQL. Jangan menghapus file SQLite sebelum pengecekan akhir selesai.
 
-## 10. Keamanan dan batasan yang perlu diketahui
+## 11. Keamanan dan batasan yang perlu diketahui
 
 - Password dikelola dan di-hash oleh Supabase Auth; website tidak menyimpan password pengguna.
 - Browser menyimpan sesi Supabase melalui Supabase JS SDK; access token dikirim sebagai Bearer token dan divalidasi server ke Supabase Auth.
 - Mutasi API menggunakan CSRF token, validasi input, serta rate limit.
 - Role administrator berasal dari `app_metadata.role` yang hanya diubah melalui script server terpercaya; `user_metadata` tidak dipakai untuk otorisasi.
-- Data operasional SQLite sementara di-scope menggunakan ID pengguna lokal yang ditautkan ke UUID Supabase Auth.
+- Cache identitas lokal SQLite hanya dipakai untuk status akun dan pemetaan akun; semua data bisnis aktif disimpan di PostgreSQL dan di-scope menggunakan UUID Supabase Auth.
 - Admin melihat data sensitif finansial seluruh pengguna. Akses admin harus diberikan hanya kepada pihak yang berwenang; penggunaan akses tersebut dicatat di activity log.
 - Verifikasi email dan reset password dikirim oleh Supabase Auth. Atur SMTP kustom di dashboard Supabase untuk penggunaan production.
-- Backup website berupa JSON; backup SQLite dari aplikasi Flutter lama diimpor melalui script migrasi di atas.
-- SQLite cocok untuk satu server dan beban kecil/menengah. Untuk trafik besar atau beberapa server aplikasi, migrasikan database ke PostgreSQL dan gunakan session store terdistribusi.
+- Backup/restore JSON per akun membaca dan menulis PostgreSQL. File SQLite backup server hanya berisi cache akun lokal; lindungi juga backup PostgreSQL melalui fitur backup Supabase dan ekspor JSON akun.
+- SQLite masih dipakai untuk express-session dan cache akun pada satu server. Untuk beberapa instance aplikasi, gunakan session store bersama. PostgreSQL menjadi database sumber untuk seluruh data bisnis.
 - Google sign-in memerlukan Google OAuth Client ID/Secret yang disimpan pada Supabase Dashboard. Ikuti bagian **Google sign-in activation** di bagian bawah dokumen ini; source code saja tidak dapat membuat kredensial Google.
 
 
-## 11. Pembaruan keamanan versi 1.1
+## 12. Pembaruan keamanan versi 1.1
 
-Catatan historis: versi 1.1 dahulu menangani verifikasi email dan pemulihan password di backend lokal. Alur autentikasi tersebut kini sudah digantikan Supabase Auth. Pembatasan percobaan login, audit aktivitas admin, batas kepemilikan kategori-barang SQLite, serta backup database tetap dipakai.
+Catatan historis: versi 1.1 dahulu menangani verifikasi email dan pemulihan password di backend lokal. Alur autentikasi tersebut kini sudah digantikan Supabase Auth. Pembatasan percobaan login, audit aktivitas admin, dan batas kepemilikan data kini diterapkan pada lapisan API/PostgreSQL RLS.
 
 ### Email verification dan reset password
 
@@ -192,7 +224,7 @@ Catatan historis: versi 1.1 dahulu menangani verifikasi email dan pemulihan pass
 
 ### Isolasi data
 
-Query transaksi, keuntungan, kategori, barang, laporan, dan backup user menggunakan `req.user.id` hasil pemetaan identitas Supabase Auth ke pengguna lokal SQLite. Produk juga dilindungi trigger SQLite agar `category_id` harus berasal dari kategori dengan `user_id` yang sama. Jangan pernah mengambil `user_id` otoritatif dari body/query browser.
+Query transaksi, keuntungan, kategori, produk, laporan, dan backup user menggunakan UUID dari `req.authUser.id` dan kebijakan RLS `auth.uid()`. SQLite hanya menyimpan pemetaan akun lokal untuk menjaga status aktif/nonaktif dan session. Jangan pernah mengambil `user_id` otoritatif dari body/query browser.
 
 ### Backup penuh database server
 
@@ -202,7 +234,7 @@ Jalankan manual:
 npm run backup
 ```
 
-Script membuat snapshot SQLite konsisten, menjalankan `PRAGMA integrity_check`, dan menghapus backup lama sesuai `BACKUP_RETENTION_DAYS`. Backup berisi semua data keuangan seluruh pengguna; simpan di disk privat/terenkripsi dan jangan unggah ke GitHub atau folder publik.
+Script membuat snapshot SQLite lokal yang konsisten dan menjalankan `PRAGMA integrity_check`. Setelah migrasi, file itu hanya berisi cache akun lokal, bukan transaksi atau stok. Untuk data bisnis gunakan backup/restore PostgreSQL per akun melalui Pengaturan dan backup Supabase project; simpan backup di lokasi privat/terenkripsi.
 
 Untuk otomatisasi Windows, buat task di Task Scheduler yang menjalankan setiap hari:
 
@@ -214,7 +246,7 @@ Untuk otomatisasi Windows, buat task di Task Scheduler yang menjalankan setiap h
 
 ### Catatan migrasi
 
-Catatan transisi: kolom `supabase_user_id` ditambahkan otomatis ke tabel `users` SQLite pada saat server berjalan. Akun lama hanya ditautkan secara otomatis bila alamat emailnya sama dan sudah terverifikasi pada sistem lama serta Supabase Auth. Akun yang tidak memenuhi kondisi tersebut perlu ditinjau manual sebelum data lama dapat dihubungkan.
+Catatan transisi: kolom `supabase_user_id` dan `business_migrated` ditambahkan otomatis ke tabel `users` SQLite saat server berjalan. Akun lama ditautkan bila alamat emailnya sama dan sudah terverifikasi pada sistem lama serta Supabase Auth. Endpoint bisnis akun lama tetap terkunci sampai skrip migrasi PostgreSQL selesai.
 
 Google sign-in memakai provider Supabase Auth. Tombol aplikasi tetap disembunyikan selama `ENABLE_GOOGLE_OAUTH=false`; setelah Client ID/Secret disimpan di Supabase Dashboard, set `ENABLE_GOOGLE_OAUTH=true` pada environment server dan restart aplikasi.
 
@@ -274,9 +306,9 @@ Transaksi yang diedit akan mengembalikan stok dari baris sebelumnya, memperbarui
 7. Backup dan restore format v2 pada akun pengujian; rincian penjualan dan tautan margin harus tetap konsisten.
 
 
-## Supabase Auth Integration (current)
+## 13. Supabase Auth dan PostgreSQL (current)
 
-Supabase Auth is the identity provider for the website. The browser uses the pinned `@supabase/supabase-js` browser SDK and the Supabase publishable key. The Express API verifies every Bearer access token against Supabase Auth before accessing the existing SQLite business-data store. The Supabase secret key is used only by the local administrator provisioning script and must never be exposed in frontend code or committed to Git.
+Supabase Auth is the identity provider for the website. The browser uses the pinned `@supabase/supabase-js` browser SDK and the Supabase publishable key. Express verifies every Bearer access token against Supabase Auth and passes the user JWT to PostgREST so PostgreSQL RLS enforces per-user ownership. The server-only Supabase secret key is used for cross-user admin queries and the one-time legacy import; it must never be exposed in frontend code or committed to Git.
 
 Required server settings in `.env`:
 
@@ -314,4 +346,4 @@ npm run revoke-admin -- admin@domain.com
 
 The script requires `SUPABASE_SECRET_KEY`, writes the protected `private.user_roles` table using the restricted provisioning RPC, and mirrors `app_metadata.role=admin` for backend authorization. The server never trusts user-editable `user_metadata` for authorization. A promoted or demoted account should sign out and sign in again to refresh its session.
 
-**Data-store note:** authentication now uses Supabase Auth, but existing ledger, inventory, reports, and admin overview endpoints still use the SQLite database and map the Supabase Auth UUID to a local user row. This integration does not yet migrate existing business data to the PostgreSQL FeeKu tables.
+**Data-store note:** all business endpoints now use PostgreSQL FeeKu. SQLite remains only for the local user/status cache and Express session store. Existing data in the local SQLite database must be moved by the dry-run/apply process in section 5 before the related legacy accounts can use business endpoints.
