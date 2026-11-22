@@ -16,7 +16,15 @@ const HOST = process.env.HOST || '0.0.0.0';
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const SUPABASE_PUBLISHABLE_KEY = String(process.env.SUPABASE_PUBLISHABLE_KEY || '');
 const SUPABASE_SECRET_KEY = String(process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '');
-const SUPABASE_ORIGIN = SUPABASE_URL ? new URL(SUPABASE_URL).origin : '';
+const SUPABASE_ORIGIN = (() => {
+  try {
+    const parsed = new URL(SUPABASE_URL);
+    if (process.env.NODE_ENV === 'production' && parsed.protocol !== 'https:') return '';
+    return parsed.origin;
+  } catch (_) {
+    return '';
+  }
+})();
 const supabaseReady = Boolean(SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY);
 const googleReady = String(process.env.ENABLE_GOOGLE_OAUTH || '').toLowerCase() === 'true';
 const serviceReady = Boolean(SUPABASE_URL && SUPABASE_SECRET_KEY);
