@@ -114,15 +114,15 @@ function pageLayout(content) {
 }
 
 function authMarkup(adminMode = false, register = false, mode = 'login', notice = '') {
-  const title = adminMode ? 'Login Administrator' : mode === 'forgot' ? 'Pulihkan akun' : (register ? 'Buat akun Buku Kas' : 'Selamat datang kembali');
+  const title = mode === 'forgot' ? 'Pulihkan akun' : (register ? 'Buat akun Buku Kas' : 'Selamat datang kembali');
   const subtitle = adminMode
-    ? 'Masuk melalui jaringan yang diizinkan. Akun admin tidak menggunakan login Google.'
+    ? 'Masuk untuk mengelola pengguna dan data operasional FeeKu.'
     : mode === 'forgot' ? 'Masukkan email akun terverifikasi untuk menerima tautan reset password.'
     : (register ? 'Buat akun untuk mulai mencatat keuangan dan stok barang.' : 'Masuk untuk melihat ringkasan keuangan dan mengelola catatan Anda.');
   const fields = `${register ? '<div class=\"field\"><label for=\"auth-name\">Nama</label><input id=\"auth-name\" name=\"name\" autocomplete=\"name\" placeholder=\"Nama Anda\" required maxlength=\"100\"></div>' : ''}
     <div class=\"field\"><label for=\"auth-email\">Email</label><input id=\"auth-email\" name=\"email\" type=\"email\" autocomplete=\"username\" placeholder=\"nama@email.com\" required></div>
     ${mode === 'forgot' ? '' : `<div class=\"field\"><label for=\"auth-password\">Password</label><input id=\"auth-password\" name=\"password\" type=\"password\" autocomplete=\"${register ? 'new-password' : 'current-password'}\" placeholder=\"${register ? 'Minimal 12 karakter' : 'Masukkan password'}\" required minlength=\"${register ? 12 : 1}\"></div>`}`;
-  return `<div class=\"auth-page\">
+  return `<div class=\"auth-page${adminMode ? ' admin-auth-page' : ''}\">
     <section class=\"auth-art\">
       <div class=\"auth-brand\"><span class=\"brand-mark\">▤</span><span>Buku Kas</span></div>
       <div class=\"auth-art-content\"><h1>Keuangan tercatat.<br>Usaha lebih terarah.</h1><p>Semua transaksi, keuntungan, stok, dan laporan tersusun di satu tempat. Tetap sederhana seperti aplikasi aslinya, kini dapat diakses dari berbagai perangkat.</p>
@@ -137,7 +137,7 @@ function authMarkup(adminMode = false, register = false, mode = 'login', notice 
       <form class=\"auth-form\" id=\"auth-form\" data-admin=\"${adminMode}\" data-register=\"${register}\" data-mode=\"${mode}\">
         ${fields}
         <div id=\"auth-error\" class=\"muted\" style=\"font-size:11px;min-height:16px\" role=\"alert\"></div>
-        <button class=\"button button-primary\" type=\"submit\">${adminMode ? 'Masuk ke Panel Admin' : mode === 'forgot' ? 'Kirim tautan reset' : (register ? 'Buat Akun' : 'Masuk')}</button>
+        <button class=\"button button-primary\" type=\"submit\">${mode === 'forgot' ? 'Kirim tautan reset' : (register ? 'Buat Akun' : 'Masuk')}</button>
       </form>
       ${!adminMode && !register && mode === 'login' && state.googleEnabled ? `<div class=\"auth-divider\">atau masuk dengan</div><button class=\"google-button\" type=\"button\" data-action=\"google-login\"><span class=\"google-g\">G</span> Lanjutkan dengan Google</button>` : ''}
       <div class=\"auth-switch\">${adminMode ? `Bukan administrator? <a class=\"text-link\" href=\"/\">Login pengguna</a>` : mode === 'forgot' ? `<button class=\"text-link\" data-action=\"show-login\">Kembali ke login</button>` : register ? `Sudah punya akun? <button class=\"text-link\" data-action=\"show-login\">Masuk</button>` : `Belum punya akun? <button class=\"text-link\" data-action=\"show-register\">Daftar</button>`}</div>
