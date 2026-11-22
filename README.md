@@ -355,9 +355,7 @@ Email/password registration, email verification, password recovery, and session 
 Public registration creates standard users only. To grant administrator access, first create a standard account through the website and verify its email. Then run this command from the server project directory:
 
 ```powershell
-$env:ADMIN_BOOTSTRAP_PASSWORD = "password-kuat-minimal-12-karakter"
 npm run create-admin -- admin@domain.com
-Remove-Item Env:ADMIN_BOOTSTRAP_PASSWORD
 ```
 
 To revoke administrator access:
