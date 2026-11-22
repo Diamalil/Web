@@ -1,6 +1,6 @@
 # Buku Kas Website
 
-Versi website dari aplikasi Flutter Buku Kas pada repo `Diamalil/Aplikasi`. Implementasi ini menyediakan frontend responsif, backend Express, database SQLite server, login pengguna melalui email/password, verifikasi email, pemulihan akun, serta panel administrator terpisah. Google OAuth dinonaktifkan secara default dan hanya dapat diaktifkan secara eksplisit.
+Versi website dari aplikasi Flutter Buku Kas. Aplikasi memakai Supabase Auth untuk identitas pengguna, email/password, verifikasi email, pemulihan akun, dan Google sign-in. Backend Express memvalidasi access token Supabase dan saat ini masih memakai SQLite untuk data operasional lama (transaksi, keuntungan, stok, dan laporan). Schema PostgreSQL FeeKu disiapkan terpisah untuk migrasi data operasional berikutnya.
 
 ## 1. Hasil bedah aplikasi asli
 
@@ -26,8 +26,8 @@ Database aplikasi asli memakai `sqflite` dengan tabel `transaksi`, `keuntungan`,
 
 ## 2. Fitur website
 
-- **Pengguna:** daftar dan login melalui email/password; email wajib diverifikasi; reset password menggunakan tautan email. Google OAuth ditahan/nonaktif secara default.
-- **Panel admin:** halaman login terpisah di `/admin/login`; admin dibuat melalui perintah server, tidak ada pendaftaran admin publik, dan tidak ada login admin Google.
+- **Pengguna:** daftar dan login melalui Supabase Auth; email wajib diverifikasi; reset password menggunakan Supabase Auth; Google sign-in tersedia setelah provider Google dikonfigurasi pada Supabase.
+- **Panel admin:** halaman login terpisah di `/admin/login`; role diberikan melalui script server dengan Supabase Secret Key dan tidak tersedia pada form registrasi publik.
 - **Dashboard:** saldo, total uang masuk/keluar, ringkasan keuntungan, lima transaksi terakhir.
 - **Buku Kas:** tambah, edit, hapus, dan daftar transaksi; transaksi Masuk dapat memakai satu atau beberapa produk katalog, jumlah, serta harga jual per unit. Omzet penjualan masuk sebagai nilai transaksi penuh ke Dashboard.
 - **Keuntungan:** margin kotor penjualan tercatat otomatis sebagai pemasukan (atau pengeluaran bila transaksi merugi), sementara catatan keuntungan lain tetap dapat ditambahkan/diedit/dihapus manual. Catatan margin otomatis dikelola melalui transaksi asal agar tidak dobel.
@@ -42,13 +42,13 @@ Tampilan mempertahankan bahasa, warna hijau Material 3, kartu saldo, ringkasan m
 
 ```text
 Browser
-  └── public/index.html + styles.css + app.js
-        │  session cookie + CSRF token
+  └── Supabase JS SDK (publishable key)
+        │  Supabase Auth session / Bearer access token
         ▼
 Node.js / Express (server.js)
-  ├── autentikasi email/password
-  ├── Google OAuth 2.0 (opsional, perlu konfigurasi)
-  ├── role guard: user / admin
+  ├── validasi token melalui Supabase Auth
+  ├── email/password + verifikasi + reset + Google OAuth
+  ├── role guard berdasarkan app_metadata.role yang dikelola server
   ├── pembatasan jaringan untuk seluruh endpoint admin
   ├── REST API transaksi / keuntungan / stok / laporan
   └── activity_logs (audit trail)
@@ -159,15 +159,16 @@ Import menambahkan data Buku Kas, keuntungan, kategori, dan barang ke akun tujua
 
 ## 10. Keamanan dan batasan yang perlu diketahui
 
-- Password pengguna dan admin disimpan sebagai bcrypt hash; password asli tidak disimpan.
-- Session memakai cookie `HttpOnly`, `SameSite=Lax`, dan `Secure` di production.
+- Password dikelola dan di-hash oleh Supabase Auth; website tidak menyimpan password pengguna.
+- Browser menyimpan sesi Supabase melalui Supabase JS SDK; access token dikirim sebagai Bearer token dan divalidasi server ke Supabase Auth.
 - Mutasi API menggunakan CSRF token, validasi input, serta rate limit.
-- Data pengguna diisolasi berdasarkan user ID dari session server.
+- Role administrator berasal dari `app_metadata.role` yang hanya diubah melalui script server terpercaya; `user_metadata` tidak dipakai untuk otorisasi.
+- Data operasional SQLite sementara di-scope menggunakan ID pengguna lokal yang ditautkan ke UUID Supabase Auth.
 - Admin melihat data sensitif finansial seluruh pengguna. Akses admin harus diberikan hanya kepada pihak yang berwenang; penggunaan akses tersebut dicatat di activity log.
-- Login email/password mendukung verifikasi email dan reset password melalui email. Untuk pengujian lokal, `EMAIL_PROVIDER=console` mencetak tautan ke terminal; untuk production, layanan email seperti Resend wajib dikonfigurasi dan diuji.
+- Verifikasi email dan reset password dikirim oleh Supabase Auth. Atur SMTP kustom di dashboard Supabase untuk penggunaan production.
 - Backup website berupa JSON; backup SQLite dari aplikasi Flutter lama diimpor melalui script migrasi di atas.
 - SQLite cocok untuk satu server dan beban kecil/menengah. Untuk trafik besar atau beberapa server aplikasi, migrasikan database ke PostgreSQL dan gunakan session store terdistribusi.
-- Google OAuth memerlukan pengaturan eksternal dari pemilik domain/proyek Google; source code saja tidak dapat mengaktifkan credential tersebut.
+- Google sign-in memerlukan Google OAuth Client ID/Secret yang disimpan pada Supabase Dashboard. Ikuti bagian **Google sign-in activation** di bagian bawah dokumen ini; source code saja tidak dapat membuat kredensial Google.
 
 
 ## 11. Pembaruan keamanan versi 1.1
@@ -231,7 +232,7 @@ Untuk otomatisasi Windows, buat task di Task Scheduler yang menjalankan setiap h
 
 Ketika server versi ini pertama kali dijalankan, kolom `email_verified_at` dan `session_version` ditambahkan otomatis ke database lama tanpa menghapus tabel/data. Akun user lama akan diminta verifikasi saat login berikutnya. Karena itu, untuk mode development lokal, tautan verifikasi dicetak ke terminal; pada production, atur email delivery sebelum upgrade. Sesi lama yang belum memiliki `sessionVersion` akan diminta login ulang satu kali.
 
-Google OAuth dibuat opt-in eksplisit: walaupun `GOOGLE_CLIENT_ID` dan `GOOGLE_CLIENT_SECRET` terisi, OAuth tetap tidak aktif kecuali `ENABLE_GOOGLE_OAUTH=true`.
+Google sign-in memakai provider Supabase Auth. Tombol aplikasi tetap disembunyikan selama `ENABLE_GOOGLE_OAUTH=false`; setelah Client ID/Secret disimpan di Supabase Dashboard, set `ENABLE_GOOGLE_OAUTH=true` pada environment server dan restart aplikasi.
 
 
 ## 12. Katalog produk, HPP, harga jual, dan margin (versi 1.2)
