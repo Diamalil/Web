@@ -80,7 +80,7 @@ npm start
 
 URL lokal:
 - Pengguna: `http://localhost:3000/`
-- Administrator: `http://localhost:3000/admin/login`
+- Administrator: login melalui halaman yang sama; server otomatis mengarahkan akun ber-role admin ke `http://localhost:3000/admin`.
 - Health check: `http://localhost:3000/healthz`
 
 ## Migrasi data bisnis dari SQLite ke PostgreSQL
@@ -155,9 +155,9 @@ Jangan hapus atau menimpa database SQLite dan snapshot backup sebelum verifikasi
 ## Administrator
 
 Akun publik selalu dibuat sebagai pengguna biasa. Untuk memberi role administrator:
-1. Buat akun melalui Supabase Auth dan verifikasi emailnya.
+1. Buat akun melalui halaman registrasi biasa dan verifikasi emailnya.
 2. Set `SUPABASE_SECRET_KEY` pada environment server.
-3. Jalankan:
+3. Jalankan perintah berikut dari terminal server. Tidak ada opsi atau form khusus administrator di halaman login:
 
 ```bash
 npm run create-admin -- admin@domain.com
