@@ -5,7 +5,6 @@ const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_SECRET_KEY = String(process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '');
 const REVOKE = process.argv[2] === '--revoke';
 const email = String(process.argv[REVOKE ? 3 : 2] || '').trim().toLowerCase();
-const password = String(process.env.ADMIN_BOOTSTRAP_PASSWORD || '');
 
 if (!/^https:\/\/[a-z0-9.-]+$/i.test(SUPABASE_URL)) {
   console.error('SUPABASE_URL wajib diisi dengan URL project Supabase HTTPS.');
@@ -18,14 +17,9 @@ if (!SUPABASE_SECRET_KEY) {
 if (!/^\S+@\S+\.\S+$/.test(email) || email.length > 254) {
   console.error(REVOKE
     ? 'Pemakaian: npm run revoke-admin -- admin@domain.com'
-    : 'Pemakaian: ADMIN_BOOTSTRAP_PASSWORD="password-kuat" npm run create-admin -- admin@domain.com');
+    : 'Pemakaian: npm run create-admin -- admin@domain.com');
   process.exit(1);
 }
-if (!REVOKE && password.length < 12) {
-  console.error('ADMIN_BOOTSTRAP_PASSWORD wajib minimal 12 karakter.');
-  process.exit(1);
-}
-
 async function request(path, method = 'GET', body) {
   const response = await fetch(\`\${SUPABASE_URL}\${path}\`, {
     method,
