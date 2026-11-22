@@ -14,7 +14,7 @@ const helmet = require('helmet');
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
-const SUPABASE_PUBLISHABLE_KEY = String(process.env.SUPABASE_PUBLISHABLE_KEY || '');
+const SUPABASE_PUBLISHABLE_KEY = String(process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLIC_KEY || '');
 const SUPABASE_SECRET_KEY = String(process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '');
 const SUPABASE_ORIGIN = (() => {
   try {
@@ -790,7 +790,7 @@ app.use('/api', writeLimiter, (req, res, next) => {
 // ---------- AUTH ----------
 app.get('/api/auth/csrf', (req, res) => {
   if (!req.session.csrfToken) req.session.csrfToken = crypto.randomBytes(32).toString('hex');
-  res.json({ csrfToken: req.session.csrfToken, googleEnabled: googleReady });
+  res.json({ csrfToken: req.session.csrfToken, googleEnabled: googleReady && supabaseReady });
 });
 
 app.get('/api/auth/config', (req, res) => {
@@ -798,19 +798,19 @@ app.get('/api/auth/config', (req, res) => {
   res.json({
     supabaseUrl: SUPABASE_URL,
     publishableKey: SUPABASE_PUBLISHABLE_KEY,
-    googleEnabled: googleReady
+    googleEnabled: googleReady && supabaseReady
   });
 });
 
 app.get('/api/auth/me', (req, res) => {
   if (!/^Bearer\s+\S+$/i.test(String(req.get('authorization') || ''))) {
-    return res.json({ user: null, googleEnabled: googleReady });
+    return res.json({ user: null, googleEnabled: googleReady && supabaseReady });
   }
   requireIdentity(req, res, () => {
     if (req.user.role === 'admin' && !adminNetworkAllowed(req.ip)) {
       return res.status(403).json({ error: 'Jaringan tidak diizinkan untuk panel administrator.' });
     }
-    return res.json({ user: safeUser(req.user), googleEnabled: googleReady });
+    return res.json({ user: safeUser(req.user), googleEnabled: googleReady && supabaseReady });
   });
 });
 
@@ -1491,10 +1491,11 @@ app.get('/api/admin/logs', requireAdmin, asyncRoute(async (req, res) => {
 }));
 
 // Frontend shell.
+app.get('/admin/login', (req, res) => res.redirect(308, '/'));
+
 app.get([
   '/',
   '/admin',
-  '/admin/login',
   '/forgot-password',
   '/verify-email',
   '/reset-password',
