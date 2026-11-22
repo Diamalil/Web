@@ -114,6 +114,22 @@ function pageLayout(content) {
 }
 
 function authMarkup(adminMode = false, register = false, mode = 'login', notice = '') {
+  if (adminMode) {
+    return '<main class="admin-auth-page"><section class="admin-auth-shell" aria-labelledby="admin-auth-title">' +
+      '<div class="admin-auth-brand"><span class="admin-auth-mark">F</span><span><strong>FeeKu</strong><small>ADMIN CONSOLE</small></span></div>' +
+      '<div class="admin-login-label"><span aria-hidden="true">◆</span> AREA ADMINISTRATOR</div>' +
+      '<header class="admin-auth-heading"><h1 id="admin-auth-title">Login Administrator</h1><p>Masuk untuk mengelola pengguna dan memantau aktivitas FeeKu.</p></header>' +
+      (notice ? '<div class="notice" role="status">' + escapeHtml(notice) + '</div>' : '') +
+      '<form class="admin-auth-form" id="auth-form" data-admin="true" data-register="false" data-mode="login">' +
+        '<div class="field"><label for="auth-email">Email</label><input id="auth-email" name="email" type="email" autocomplete="username" placeholder="nama@email.com" required></div>' +
+        '<div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" autocomplete="current-password" placeholder="Masukkan password" required></div>' +
+        '<div id="auth-error" class="admin-auth-error" role="alert" aria-live="polite"></div>' +
+        '<button class="button button-primary" type="submit">Masuk ke Panel Admin</button>' +
+      '</form>' +
+      '<div class="admin-auth-footer"><a class="text-link" href="/">Kembali ke login pengguna</a></div>' +
+      '<div class="admin-auth-security"><span aria-hidden="true">▣</span><span>Akses administrator dibatasi oleh verifikasi role dan allowlist jaringan pada server.</span></div>' +
+    '</section></main>';
+  }
   const title = adminMode ? 'Login Administrator' : mode === 'forgot' ? 'Pulihkan akun' : (register ? 'Buat akun Buku Kas' : 'Selamat datang kembali');
   const subtitle = adminMode
     ? 'Masuk melalui jaringan yang diizinkan. Akun admin tidak menggunakan login Google.'
@@ -255,7 +271,7 @@ async function renderSettings() {
     <div class="setting-grid"><section class="setting-card"><div class="setting-icon">⇧</div><h3>Backup Data</h3><p>Unduh transaksi beserta rincian produk penjualan, snapshot HPP/harga jual, keuntungan otomatis, kategori, dan stok.</p><button class="button button-primary" data-action="backup">Backup Sekarang</button></section>
     <section class="setting-card"><div class="setting-icon">↻</div><h3>Restore Backup</h3><p>Ganti data akun ini dari file backup Buku Kas. Data saat ini akan ditimpa.</p><label class="button button-secondary" for="restore-file">Pilih File Backup</label><input id="restore-file" type="file" accept="application/json,.json" hidden></section>
     <section class="setting-card"><div class="setting-icon" style="background:#fff0ee;color:#c74747">▧</div><h3>Export PDF</h3><p>Buat laporan Buku Kas atau Keuntungan, lalu simpan melalui dialog cetak browser.</p><div class="field"><label>Dari</label><input type="date" id="settings-from" value="${state.reportFrom}"></div><div class="field" style="margin-top:10px"><label>Sampai</label><input type="date" id="settings-to" value="${state.reportTo}"></div><div class="table-actions" style="margin-top:13px"><button class="button button-secondary button-small" data-action="settings-print" data-type="transaction">Buku Kas</button><button class="button button-secondary button-small" data-action="settings-print" data-type="profit">Keuntungan</button></div></section>
-    <section class="setting-card"><div class="setting-icon">ⓘ</div><h3>Informasi</h3><div class="info-row"><span class="muted">Versi Website</span><strong>1.2.0</strong></div><div class="info-row"><span class="muted">Database</span><strong>SQLite Server</strong></div><div class="info-row"><span class="muted">Login</span><strong>Email + Password</strong></div></section></div>
+    <section class="setting-card"><div class="setting-icon">ⓘ</div><h3>Informasi</h3><div class="info-row"><span class="muted">Versi Website</span><strong>1.2.0</strong></div><div class="info-row"><span class="muted">Database</span><strong>PostgreSQL (Supabase)</strong></div><div class="info-row"><span class="muted">Login</span><strong>Email + Password</strong></div></section></div>
     <div class="notice" style="margin-top:16px">Backup hanya berisi data milik akun Anda. Data yang tersimpan di server tetap dapat dilihat administrator sistem untuk keperluan pengelolaan dan audit sesuai hak akses.</div>`;
 }
 
@@ -395,7 +411,7 @@ async function renderAdminActivity() {
   }
   const items = state.adminLogs;
   return `${heading('Log Aktivitas', 'Riwayat tindakan pengguna dan admin yang tercatat di server.')}
-    <section class="section-card"><div class="section-head"><div><h2 class="section-title">Seluruh Aktivitas</h2><div class="section-caption">${items.length} catatan telah dimuat</div></div><button class="button button-secondary button-small" data-action="refresh-logs">Muat Ulang</button></div>${items.length ? `<div class="table-wrap"><table><thead><tr><th>Waktu</th><th>Pengguna</th><th>Aktivitas</th><th>Detail</th><th>IP</th></tr></thead><tbody>${items.map(l => { let meta='';try{meta=JSON.stringify(JSON.parse(l.metadata||'{}'));}catch{} return `<tr><td>${escapeHtml(l.created_at)}</td><td><strong>${escapeHtml(l.user_name || l.actor_email || 'Tidak diketahui')}</strong></td><td><span class="pill ${l.action.includes('delete') || l.action.includes('failed') ? 'out' : 'in'}">${escapeHtml(l.action)}</span></td><td style="max-width:280px;overflow-wrap:anywhere">${escapeHtml(l.entity_type)} ${escapeHtml(l.entity_id || '')}<div class="muted" style="font-size:10px">${escapeHtml(meta)}</div></td><td>${escapeHtml(l.ip_address || '-')}</td></tr>`; }).join('')}</tbody></table></div>` : emptyState('Belum ada log aktivitas','Log akan muncul saat ada tindakan pada akun.','◷')}${!state.adminLogsDone ? '<div style="padding-top:16px;text-align:center"><button class="button button-secondary" data-action="load-more-logs">Muat Aktivitas Lebih Lama</button></div>' : '<p class="muted" style="font-size:10px;text-align:center;margin-top:14px">Semua log aktivitas telah dimuat.</p>'}</section>`;
+    <section class="section-card"><div class="section-head"><div><h2 class="section-title">Seluruh Aktivitas</h2><div class="section-caption">${items.length} catatan telah dimuat</div></div><button class="button button-secondary button-small" data-action="refresh-logs">Muat Ulang</button></div>${items.length ? `<div class="table-wrap"><table><thead><tr><th>Waktu</th><th>Pengguna</th><th>Aktivitas</th><th>Detail</th><th>IP</th></tr></thead><tbody>${items.map(l => { let meta='';try{const value=typeof l.metadata==='string'?JSON.parse(l.metadata||'{}'):(l.metadata||{});meta=JSON.stringify(value);}catch{} return `<tr><td>${escapeHtml(l.created_at)}</td><td><strong>${escapeHtml(l.user_name || l.actor_email || 'Tidak diketahui')}</strong></td><td><span class="pill ${l.action.includes('delete') || l.action.includes('failed') ? 'out' : 'in'}">${escapeHtml(l.action)}</span></td><td style="max-width:280px;overflow-wrap:anywhere">${escapeHtml(l.entity_type)} ${escapeHtml(l.entity_id || '')}<div class="muted" style="font-size:10px">${escapeHtml(meta)}</div></td><td>${escapeHtml(l.ip_address || '-')}</td></tr>`; }).join('')}</tbody></table></div>` : emptyState('Belum ada log aktivitas','Log akan muncul saat ada tindakan pada akun.','◷')}${!state.adminLogsDone ? '<div style="padding-top:16px;text-align:center"><button class="button button-secondary" data-action="load-more-logs">Muat Aktivitas Lebih Lama</button></div>' : '<p class="muted" style="font-size:10px;text-align:center;margin-top:14px">Semua log aktivitas telah dimuat.</p>'}</section>`;
 }
 async function openUserDetails(id) {
   const d = await api(`/api/admin/users/${id}/data`);
@@ -421,11 +437,17 @@ async function logout() {
   showAuth(false, false, 'login');
 }
 async function downloadBackup() {
-  const res = await fetch('/api/settings/backup', { credentials:'same-origin' });
-  if (!res.ok) { const p=await res.json().catch(()=>({})); throw new Error(p.error || 'Backup gagal.'); }
-  const blob = await res.blob(); const url = URL.createObjectURL(blob); const a=document.createElement('a');
-  a.href=url; a.download=`buku-kas-backup-${todayISO()}.json`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-  toast('Backup berhasil diunduh.');
+  const backup = await api('/api/settings/backup');
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'feeku-backup-' + todayISO() + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  toast('Backup PostgreSQL berhasil diunduh.');
 }
 function downloadCsv() {
   const rows = [['Tanggal','Keterangan','Jenis','Nominal','Rincian Produk'], ...(state.report?.items || []).map(x => [x.date,x.description,x.type,x.amount,(x.items||[]).map(i=>`${i.product_name} x ${i.quantity} @ ${i.unit_sale_price}`).join(' | ')])];
@@ -596,12 +618,19 @@ document.addEventListener('submit', async event => {
           await state.supabase.auth.signOut();
           throw new Error('Akun ini tidak memiliki hak administrator.');
         }
+        if (!adminMode && result.user.role === 'admin') {
+          await state.supabase.auth.signOut();
+          throw new Error('Akun administrator harus masuk melalui halaman Login Administrator.');
+        }
         state.user = result.user;
         state.isAdmin = result.user.role === 'admin';
         state.page = state.isAdmin ? 'overview' : 'dashboard';
         history.replaceState({}, '', state.isAdmin ? '/admin' : '/');
         await renderPage();
       } catch (err) {
+        if (adminMode && state.supabase) {
+          await state.supabase.auth.signOut().catch(() => {});
+        }
         if (errorBox) errorBox.textContent = err.message;
         submit.disabled = false;
         submit.textContent = adminMode ? 'Masuk ke Panel Admin' : mode === 'forgot' ? 'Kirim tautan reset' : register ? 'Buat Akun' : 'Masuk';
