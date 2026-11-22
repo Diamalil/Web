@@ -8,9 +8,10 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "create-admin": "node scripts/create-admin.js",
-    "check": "node --check server.js && node --check public/app.js && node --check scripts/create-admin.js && node --check scripts/import-legacy-sqlite.js && node --check scripts/backup-database.js",
+    "check": "node --check server.js && node --check lib/postgrest.js && node --check lib/business-routes.js && node --check public/app.js && node --check scripts/create-admin.js && node --check scripts/import-legacy-sqlite.js && node --check scripts/migrate-sqlite-to-postgres.js && node --check scripts/backup-database.js",
     "backup": "node scripts/backup-database.js",
-    "revoke-admin": "node scripts/create-admin.js --revoke"
+    "revoke-admin": "node scripts/create-admin.js --revoke",
+    "migrate:postgres": "node scripts/migrate-sqlite-to-postgres.js"
   },
   "engines": {
     "node": ">=20.11.0"
