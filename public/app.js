@@ -618,12 +618,19 @@ document.addEventListener('submit', async event => {
           await state.supabase.auth.signOut();
           throw new Error('Akun ini tidak memiliki hak administrator.');
         }
+        if (!adminMode && result.user.role === 'admin') {
+          await state.supabase.auth.signOut();
+          throw new Error('Akun administrator harus masuk melalui halaman Login Administrator.');
+        }
         state.user = result.user;
         state.isAdmin = result.user.role === 'admin';
         state.page = state.isAdmin ? 'overview' : 'dashboard';
         history.replaceState({}, '', state.isAdmin ? '/admin' : '/');
         await renderPage();
       } catch (err) {
+        if (adminMode && state.supabase) {
+          await state.supabase.auth.signOut().catch(() => {});
+        }
         if (errorBox) errorBox.textContent = err.message;
         submit.disabled = false;
         submit.textContent = adminMode ? 'Masuk ke Panel Admin' : mode === 'forgot' ? 'Kirim tautan reset' : register ? 'Buat Akun' : 'Masuk';
