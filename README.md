@@ -324,3 +324,48 @@ Transaksi yang diedit akan mengembalikan stok dari baris sebelumnya, memperbarui
 5. Hapus transaksi. Hasil: stok dikembalikan dan keuntungan otomatis terkait dihapus.
 6. Uji produk milik user lain dan stok tidak cukup. Server harus menolak transaksi tanpa mengubah saldo, stok, atau keuntungan.
 7. Backup dan restore format v2 pada akun pengujian; rincian penjualan dan tautan margin harus tetap konsisten.
+
+
+## Supabase Auth Integration (current)
+
+Supabase Auth is the identity provider for the website. The browser uses the pinned `@supabase/supabase-js` browser SDK and the Supabase publishable key. The Express API verifies every Bearer access token against Supabase Auth before accessing the existing SQLite business-data store. The Supabase secret key is used only by the local administrator provisioning script and must never be exposed in frontend code or committed to Git.
+
+Required server settings in `.env`:
+
+```dotenv
+SUPABASE_URL=https://dvtnxezautjkeshsbdyk.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+SUPABASE_SECRET_KEY=sb_secret_...
+ENABLE_GOOGLE_OAUTH=false
+```
+
+Email/password registration, email verification, password recovery, and session refresh use Supabase Auth. Configure the project's Auth URL Configuration with the website Site URL and redirect allow-list entries for `http://localhost:3000/auth/callback`, `http://localhost:3000/auth/reset-password`, and the equivalent HTTPS production URLs. Configure a custom SMTP sender in Supabase before using email verification and recovery in production.
+
+### Google sign-in activation
+
+1. Create a Google OAuth client with application type **Web application** in Google Cloud.
+2. Add the website origin (for example `http://localhost:3000`) to Authorized JavaScript origins.
+3. Add this Supabase callback to Authorized redirect URIs: `https://dvtnxezautjkeshsbdyk.supabase.co/auth/v1/callback`.
+4. Open Supabase Dashboard → Authentication → Sign In / Providers → Google. Enable the provider and save the Google Client ID and Client Secret there. Do not put the Google client secret in the website repository.
+5. Add the website callback URL to Supabase Auth URL Configuration's redirect allow-list: `http://localhost:3000/auth/callback` and the HTTPS production URL.
+6. Set `ENABLE_GOOGLE_OAUTH=true` in the website server environment and restart/redeploy the server.
+
+### Administrator provisioning
+
+Public registration creates standard users only. To grant administrator access, first create a standard account through the website and verify its email. Then run this command from the server project directory:
+
+```powershell
+$env:ADMIN_BOOTSTRAP_PASSWORD = "password-kuat-minimal-12-karakter"
+npm run create-admin -- admin@domain.com
+Remove-Item Env:ADMIN_BOOTSTRAP_PASSWORD
+```
+
+To revoke administrator access:
+
+```powershell
+npm run revoke-admin -- admin@domain.com
+```
+
+The script requires `SUPABASE_SECRET_KEY`, writes the protected `private.user_roles` table using the restricted provisioning RPC, and mirrors `app_metadata.role=admin` for backend authorization. The server never trusts user-editable `user_metadata` for authorization. A promoted or demoted account should sign out and sign in again to refresh its session.
+
+**Data-store note:** authentication now uses Supabase Auth, but existing ledger, inventory, reports, and admin overview endpoints still use the SQLite database and map the Supabase Auth UUID to a local user row. This integration does not yet migrate existing business data to the PostgreSQL FeeKu tables.
