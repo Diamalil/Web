@@ -16,11 +16,23 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':
 const initials = name => String(name || 'U').trim().split(/\s+/).slice(0, 2).map(x => x[0]).join('').toUpperCase();
 
 const state = {
-  csrf: '', user: null, page: 'dashboard', isAdmin: false, googleEnabled: false,
+  csrf: '', user: null, page: 'dashboard', isAdmin: false, googleEnabled: false, supabase: null,
   report: null, reportFrom: firstDay(), reportTo: lastDay(), stockCategories: [], stockProducts: [],
   userSearch: '', adminDetail: null, adminLogs: [], adminLogsDone: false
 };
 
+async function initSupabase() {
+  const response = await fetch('/api/auth/config', { credentials: 'same-origin', cache: 'no-store' });
+  const config = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(config.error || 'Konfigurasi Supabase Auth belum tersedia.');
+  if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+    throw new Error('Library Supabase Auth gagal dimuat. Periksa koneksi internet lalu muat ulang halaman.');
+  }
+  state.supabase = window.supabase.createClient(config.supabaseUrl, config.publishableKey, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+  });
+  state.googleEnabled = Boolean(config.googleEnabled);
+}
 async function getCsrf() {
   const response = await fetch('/api/auth/csrf', { credentials: 'same-origin' });
   const payload = await response.json();
@@ -32,6 +44,10 @@ async function api(url, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) headers['X-CSRF-Token'] = state.csrf;
+  if (state.supabase) {
+    const { data: { session } } = await state.supabase.auth.getSession();
+    if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+  }
   const response = await fetch(url, {
     ...options, method, headers, credentials: 'same-origin',
     body: options.body === undefined ? undefined : JSON.stringify(options.body)
@@ -120,7 +136,7 @@ function authMarkup(adminMode = false, register = false, mode = 'login', notice 
         <div id=\"auth-error\" class=\"muted\" style=\"font-size:11px;min-height:16px\" role=\"alert\"></div>
         <button class=\"button button-primary\" type=\"submit\">${adminMode ? 'Masuk ke Panel Admin' : mode === 'forgot' ? 'Kirim tautan reset' : (register ? 'Buat Akun' : 'Masuk')}</button>
       </form>
-      ${!adminMode && !register && mode === 'login' && state.googleEnabled ? `<div class=\"auth-divider\">atau masuk dengan</div><a class=\"google-button\" href=\"/auth/google\"><span class=\"google-g\">G</span> Lanjutkan dengan Google</a>` : ''}
+      ${!adminMode && !register && mode === 'login' && state.googleEnabled ? `<div class=\"auth-divider\">atau masuk dengan</div><button class=\"google-button\" type=\"button\" data-action=\"google-login\"><span class=\"google-g\">G</span> Lanjutkan dengan Google</button>` : ''}
       <div class=\"auth-switch\">${adminMode ? `Bukan administrator? <a class=\"text-link\" href=\"/\">Login pengguna</a>` : mode === 'forgot' ? `<button class=\"text-link\" data-action=\"show-login\">Kembali ke login</button>` : register ? `Sudah punya akun? <button class=\"text-link\" data-action=\"show-login\">Masuk</button>` : `Belum punya akun? <button class=\"text-link\" data-action=\"show-register\">Daftar</button>`}</div>
       ${!adminMode && !register && mode === 'login' ? '<div class=\"auth-switch\" style=\"margin-top:12px\"><button class=\"text-link\" data-action=\"show-forgot\">Lupa password?</button></div>' : ''}
       ${!adminMode ? '<div class=\"auth-switch\" style=\"margin-top:12px\"><a class=\"text-link\" href=\"/admin/login\">Login administrator</a></div>' : ''}
@@ -439,6 +455,15 @@ document.addEventListener('click', async event => {
     if (action === 'show-login') { history.replaceState({}, '', '/'); return showAuth(false, false, 'login'); }
     if (action === 'show-forgot') { history.replaceState({}, '', '/forgot-password'); return showAuth(false, false, 'forgot'); }
     if (action === 'logout') return logout();
+    if (action === 'google-login') {
+      if (!state.supabase || !state.googleEnabled) throw new Error('Login Google belum diaktifkan oleh pengelola.');
+      const { error } = await state.supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: `${location.origin}/auth/callback` }
+      });
+      if (error) throw error;
+      return;
+    }
     if (action === 'close-modal') { if ((button.classList.contains('modal-backdrop') && event.target === button) || button.classList.contains('close-button')) hideModal(); return; }
     if (action === 'add-ledger') return openLedger(button.dataset.type);
     if (action === 'edit-ledger') return openLedger(button.dataset.type, button.dataset.id);
@@ -505,20 +530,75 @@ document.addEventListener('submit', async event => {
   try {
     if (form.id === 'auth-form') {
       event.preventDefault();
-      const fd=new FormData(form); const admin=form.dataset.admin==='true'; const register=form.dataset.register==='true'; const mode=form.dataset.mode || (register?'register':'login');
-      const body={email:fd.get('email')};
-      if (mode !== 'forgot') body.password=fd.get('password');
-      if(register) body.name=fd.get('name');
-      const endpoint=admin?'/api/auth/admin/login':mode==='forgot'?'/api/auth/forgot-password':register?'/api/auth/register':'/api/auth/login';
-      const submit=form.querySelector('button[type=submit]'); submit.disabled=true; submit.textContent='Memproses…';
-      const error=document.getElementById('auth-error'); if(error) error.textContent='';
+      const fd = new FormData(form);
+      const adminMode = form.dataset.admin === 'true';
+      const register = form.dataset.register === 'true';
+      const mode = form.dataset.mode || (register ? 'register' : 'login');
+      const email = String(fd.get('email') || '').trim().toLowerCase();
+      const password = String(fd.get('password') || '');
+      const name = String(fd.get('name') || '').trim();
+      const submit = form.querySelector('button[type=submit]');
+      const errorBox = document.getElementById('auth-error');
+      submit.disabled = true;
+      submit.textContent = 'Memproses…';
+      if (errorBox) errorBox.textContent = '';
+
       try {
-        const result=await api(endpoint,{method:'POST',body});
-        if (mode === 'forgot') { history.replaceState({}, '', '/'); return showAuth(false, false, 'login', result.message); }
-        if (register) { history.replaceState({}, '', '/'); return showAuth(false, false, 'login', result.message); }
-        state.user=result.user; state.isAdmin=result.user.role==='admin'; state.page=state.isAdmin?'overview':'dashboard';
-        history.replaceState({},'',state.isAdmin?'/admin':'/'); await renderPage();
-      } catch(err) { if(error) error.textContent=err.message; submit.disabled=false; submit.textContent=admin?'Masuk ke Panel Admin':mode==='forgot'?'Kirim tautan reset':register?'Buat Akun':'Masuk'; }
+        if (!state.supabase) throw new Error('Supabase Auth belum siap. Muat ulang halaman.');
+        if (mode === 'forgot') {
+          const { error } = await state.supabase.auth.resetPasswordForEmail(email, {
+            redirectTo: `${location.origin}/auth/reset-password`
+          });
+          if (error) throw error;
+          history.replaceState({}, '', '/');
+          return showAuth(false, false, 'login', 'Jika email terdaftar, tautan pemulihan akan dikirim.');
+        }
+
+        if (register) {
+          const { data, error } = await state.supabase.auth.signUp({
+            email,
+            password,
+            options: {
+              data: { display_name: name },
+              emailRedirectTo: `${location.origin}/auth/callback`
+            }
+          });
+          if (error) throw error;
+          if (data.session) {
+            const result = await api('/api/auth/me');
+            if (!result.user) throw new Error('Akun dibuat, tetapi sesi belum dapat diverifikasi. Silakan login kembali.');
+            state.user = result.user;
+            state.isAdmin = result.user.role === 'admin';
+            state.page = state.isAdmin ? 'overview' : 'dashboard';
+            history.replaceState({}, '', state.isAdmin ? '/admin' : '/');
+            await renderPage();
+            return;
+          }
+          history.replaceState({}, '', '/');
+          return showAuth(false, false, 'login', 'Akun berhasil dibuat. Periksa email untuk verifikasi sebelum login.');
+        }
+
+        const { error } = await state.supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        const result = await api('/api/auth/me');
+        if (!result.user) {
+          await state.supabase.auth.signOut();
+          throw new Error('Sesi login belum dapat diverifikasi oleh server.');
+        }
+        if (adminMode && result.user.role !== 'admin') {
+          await state.supabase.auth.signOut();
+          throw new Error('Akun ini tidak memiliki hak administrator.');
+        }
+        state.user = result.user;
+        state.isAdmin = result.user.role === 'admin';
+        state.page = state.isAdmin ? 'overview' : 'dashboard';
+        history.replaceState({}, '', state.isAdmin ? '/admin' : '/');
+        await renderPage();
+      } catch (err) {
+        if (errorBox) errorBox.textContent = err.message;
+        submit.disabled = false;
+        submit.textContent = adminMode ? 'Masuk ke Panel Admin' : mode === 'forgot' ? 'Kirim tautan reset' : register ? 'Buat Akun' : 'Masuk';
+      }
       return;
     }
     if (form.id === 'token-form') {
@@ -526,14 +606,23 @@ document.addEventListener('submit', async event => {
       const fd=new FormData(form); const kind=form.dataset.kind; const error=document.getElementById('auth-error');
       const submit=form.querySelector('button[type=submit]'); submit.disabled=true; submit.textContent='Memproses…';
       try {
-        let result;
-        if (kind === 'verify') result=await api('/api/auth/verify-email',{method:'POST',body:{token:fd.get('token')}});
-        else {
-          const password=String(fd.get('password')||'');
-          if(password!==String(fd.get('confirmPassword')||'')) throw new Error('Konfirmasi password tidak sama.');
-          result=await api('/api/auth/reset-password',{method:'POST',body:{token:fd.get('token'),password}});
+        if (kind === 'verify') {
+          const result = await api('/api/auth/me');
+          if (!result.user) throw new Error('Verifikasi email belum selesai. Buka kembali tautan dari email.');
+          state.user = result.user;
+          state.isAdmin = result.user.role === 'admin';
+          state.page = state.isAdmin ? 'overview' : 'dashboard';
+          history.replaceState({}, '', state.isAdmin ? '/admin' : '/');
+          await renderPage();
+          return;
         }
-        history.replaceState({}, '', '/'); return showAuth(false, false, 'login', result.message);
+        const password = String(fd.get('password') || '');
+        if (password !== String(fd.get('confirmPassword') || '')) throw new Error('Konfirmasi password tidak sama.');
+        const { error: updateError } = await state.supabase.auth.updateUser({ password });
+        if (updateError) throw updateError;
+        await state.supabase.auth.signOut();
+        history.replaceState({}, '', '/');
+        return showAuth(false, false, 'login', 'Password berhasil diperbarui. Silakan login kembali.');
       } catch(err) { if(error) error.textContent=err.message; submit.disabled=false; submit.textContent=kind==='verify'?'Verifikasi email':'Simpan password baru'; }
       return;
     }
@@ -606,23 +695,48 @@ document.addEventListener('change', async event => {
 async function init() {
   const adminPath = location.pathname.startsWith('/admin');
   try {
+    await initSupabase();
     await getCsrf();
-    if (location.pathname === '/verify-email') { appRoot.innerHTML = tokenPageMarkup('verify'); return; }
-    if (location.pathname === '/reset-password') { appRoot.innerHTML = tokenPageMarkup('reset'); return; }
+    const { data: { session } } = await state.supabase.auth.getSession();
+
+    if (location.pathname === '/auth/reset-password' || location.pathname === '/reset-password') {
+      if (!session) return showAuth(false, false, 'login', 'Tautan pemulihan tidak valid atau sudah kedaluwarsa.');
+      appRoot.innerHTML = tokenPageMarkup('reset');
+      return;
+    }
+    if (location.pathname === '/verify-email') {
+      if (!session) return showAuth(false, false, 'login', 'Verifikasi email dilakukan melalui tautan dari Supabase Auth.');
+      const verified = await api('/api/auth/me');
+      if (!verified.user) return showAuth(false, false, 'login', 'Verifikasi email belum dapat dikonfirmasi. Silakan coba tautannya kembali.');
+      state.user = verified.user;
+      state.isAdmin = verified.user.role === 'admin';
+      state.page = state.isAdmin ? 'overview' : 'dashboard';
+      history.replaceState({}, '', state.isAdmin ? '/admin' : '/');
+      await renderPage();
+      return;
+    }
     if (location.pathname === '/forgot-password') return showAuth(false, false, 'forgot');
+    if (location.pathname === '/auth/callback' && !session) {
+      return showAuth(false, false, 'login', 'Login atau verifikasi tidak berhasil. Silakan coba lagi.');
+    }
+
     const result = await api('/api/auth/me');
     if (!result.user) return showAuth(adminPath, false);
     if (result.user.role === 'admin') {
       if (!adminNetworkAllowedInClient()) return showAuth(true, false);
-      state.user=result.user; state.isAdmin=true; state.page='overview';
-      if (!adminPath) history.replaceState({},'', '/admin');
+      state.user = result.user; state.isAdmin = true; state.page = 'overview';
+      if (!adminPath) history.replaceState({}, '', '/admin');
     } else {
       if (adminPath) return showAuth(true, false);
-      state.user=result.user; state.isAdmin=false; state.page='dashboard';
+      state.user = result.user; state.isAdmin = false; state.page = 'dashboard';
     }
-    state.googleEnabled=Boolean(result.googleEnabled);
+    state.googleEnabled = Boolean(result.googleEnabled);
     await renderPage();
-  } catch (err) { showAuth(adminPath,false); }
+  } catch (err) {
+    showAuth(adminPath, false);
+    const errorBox = document.getElementById('auth-error');
+    if (errorBox) errorBox.textContent = err.message;
+  }
 }
 function adminNetworkAllowedInClient() { return true; } // Otorisasi jaringan sesungguhnya selalu diperiksa ulang oleh server.
 window.addEventListener('popstate', () => { if (state.user) { state.page=state.isAdmin?'overview':'dashboard'; renderPage(); } else showAuth(location.pathname.startsWith('/admin')); });
