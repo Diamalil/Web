@@ -215,6 +215,11 @@ async function main() {
 
   const db = new Database(snapshotPath, { readonly: true, fileMustExist: true });
   try {
+    const integrity = db.pragma('integrity_check');
+    if (!Array.isArray(integrity) || integrity.length !== 1 ||
+        String(integrity[0].integrity_check || '').toLowerCase() !== 'ok') {
+      fail('Snapshot SQLite gagal pemeriksaan integrity_check. Jangan lanjutkan import sebelum database sumber diperbaiki.');
+    }
     if (!tableExists(db, 'users')) fail('Database sumber tidak memiliki tabel users. Pastikan file yang dipilih adalah database website FeeKu lama.');
     const users = readRows(db, 'users');
     if (selectedEmail) {
