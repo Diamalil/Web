@@ -107,7 +107,8 @@ function importPayload(db, localUserId) {
     unit_cost: Math.max(0, Number(row.unit_cost || 0)),
     sale_price: Math.max(0, Number(row.sale_price || row.price || 0)),
     pricing_method: row.pricing_method || 'manual',
-    pricing_value: Math.max(0, Number(row.pricing_value || 0))
+    pricing_value: Math.max(0, Number(row.pricing_value || 0)),
+    is_active: row.is_active == null ? true : Boolean(row.is_active)
   }));
 
   const allItems = readRows(db, 'transaction_items', 'user_id=@id', { id: localUserId });
