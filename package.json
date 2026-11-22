@@ -1,5 +1,5 @@
 {
-  "name": "feeku-website",
+  "name": "buku-kas-website",
   "version": "1.2.0",
   "private": true,
   "description": "FeeKu website with Supabase Auth and PostgreSQL business data.",
