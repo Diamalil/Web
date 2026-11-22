@@ -33,6 +33,12 @@ Pemeriksaan source memastikan:
 - Tabel `private.user_roles` tidak dapat dibaca/ditulis melalui privilege pengguna `authenticated`.
 - Belum ada akun Auth, profil, ataupun role admin yang dibuat selama implementasi.
 
+## Uji Google OAuth langsung pada project Supabase
+
+**Status: berhasil.** Log Supabase Auth tanggal 22 November 2026 pukul 01:02:03 UTC mencatat event `Login` dengan provider `google`. Audit database setelah login menunjukkan satu record di `auth.users` dan satu record `public.profiles`; keduanya memakai UUID yang sama. Trigger `on_auth_user_created` berjalan otomatis. Belum ada role administrator yang dibuat.
+
+Kredensial Google yang sebelumnya ditolak dengan `invalid_client` telah diperbaiki pada konfigurasi provider sehingga pertukaran authorization code berhasil. Tidak ada Client Secret yang disimpan dalam repository.
+
 ## Batasan yang belum diuji end-to-end
 
 HTTP/browser end-to-end belum dapat dinyatakan lulus di lingkungan pemeriksaan ini. Belum ada akun email terverifikasi, SMTP project belum diuji, Google OAuth Client ID/Secret belum diberikan atau disimpan di Supabase Dashboard, dan aplikasi belum dijalankan dengan environment lokal/production pemilik proyek.
