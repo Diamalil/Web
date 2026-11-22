@@ -358,3 +358,19 @@ td { color:#354139; }
   .sale-remove { grid-column: 2; justify-self: end; }
   .sale-summary { grid-template-columns: 1fr; }
 }
+
+/* Standalone administrator sign-in follows the centered, minimal login brief. */
+.admin-auth-page { display:flex; align-items:center; justify-content:center; min-height:100vh; padding:40px 24px; background:#fff; }
+.admin-auth-page .auth-art { display:none; }
+.admin-auth-page .auth-panel { width:min(100%,480px); min-height:100vh; padding:36px 24px; }
+.admin-auth-page .auth-form-wrap { max-width:364px; }
+.admin-auth-page .auth-heading { margin-bottom:26px; }
+.admin-auth-page .auth-heading h2 { font-size:25px; }
+.admin-auth-page .auth-form { gap:14px; }
+.admin-auth-page .auth-form .field input { min-height:46px; }
+.admin-auth-page .auth-form .button { min-height:46px; margin-top:16px; }
+.admin-auth-page .admin-login-label { margin-bottom:14px; }
+.admin-auth-page .auth-switch { margin-top:18px; }
+.admin-auth-page .auth-switch + .auth-switch { margin-top:12px; }
+.admin-auth-page .muted { font-size:10px; line-height:1.6; margin-top:18px; text-align:center; }
+@media (max-width:600px) { .admin-auth-page { padding:0 20px; } .admin-auth-page .auth-panel { padding:30px 0; } }
