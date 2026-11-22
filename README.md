@@ -97,8 +97,8 @@ Buka:
 
 Panel admin memiliki dua lapisan proteksi:
 
-1. Kredensial admin diperiksa di endpoint khusus `/api/auth/admin/login`.
-2. IP klien diperiksa pada saat login **dan setiap request endpoint admin**.
+1. Login admin memakai endpoint Supabase Auth yang sama seperti pengguna biasa; backend hanya menerima akun dengan claim `app_metadata.role=admin`.
+2. IP klien diperiksa saat sesi admin diverifikasi **dan pada setiap request endpoint admin**.
 
 Jika `ADMIN_ALLOWED_CIDRS` kosong, default yang diizinkan hanya loopback, private LAN IPv4 (`10/8`, `172.16/12`, `192.168/16`), serta IPv6 ULA/link-local. Ini mendukung akses lokal. Untuk akses melalui internet, tambahkan IP publik statis admin atau CIDR VPN tepercaya, misalnya:
 
@@ -173,42 +173,26 @@ Import menambahkan data Buku Kas, keuntungan, kategori, dan barang ke akun tujua
 
 ## 11. Pembaruan keamanan versi 1.1
 
-Versi ini menambahkan alur verifikasi email dan pemulihan password, pembatasan percobaan login, revokasi sesi, audit aktivitas admin, batas kepemilikan kategori-barang di SQLite, serta script backup database penuh.
+Catatan historis: versi 1.1 dahulu menangani verifikasi email dan pemulihan password di backend lokal. Alur autentikasi tersebut kini sudah digantikan Supabase Auth. Pembatasan percobaan login, audit aktivitas admin, batas kepemilikan kategori-barang SQLite, serta backup database tetap dipakai.
 
 ### Email verification dan reset password
 
-- Pendaftaran user membutuhkan email yang bisa menerima tautan verifikasi.
-- Token verifikasi berlaku 30 menit, token reset password berlaku 20 menit, disimpan dalam bentuk SHA-256 hash dan hanya dapat dipakai sekali.
-- Password baru dan password saat pendaftaran minimal 12 karakter.
-- Reset password menaikkan `session_version`, sehingga sesi lama otomatis tidak berlaku.
-- Login akun yang belum diverifikasi akan mengirim tautan verifikasi baru jika layanan email tersedia.
-- Respons lupa password tidak membocorkan apakah sebuah email terdaftar.
-
-**Development lokal:** `.env.example` menggunakan `EMAIL_PROVIDER=console`. Tautan verifikasi/reset hanya dicetak ke terminal server untuk uji lokal. Jangan gunakan mode ini untuk production.
-
-**Production:** buat API key Resend, verifikasi domain pengirim, lalu isi `.env`:
-
-```env
-NODE_ENV=production
-EMAIL_PROVIDER=resend
-RESEND_API_KEY=API_KEY_RESMU
-EMAIL_FROM=Buku Kas <noreply@domain-terverifikasi-kamu.com>
-APP_BASE_URL=https://domain-kamu
-```
-
-Source menggunakan API `POST https://api.resend.com/emails` ([dokumentasi resmi Resend](https://resend.com/docs/api-reference/emails/send-email)); API key hanya berada di server. Jangan taruh API key pada `public/app.js` atau commit ke Git.
+- Registrasi email/password menggunakan Supabase Auth.
+- Supabase mengirim tautan verifikasi dan pemulihan berdasarkan konfigurasi URL Redirect.
+- Password dikelola oleh Supabase Auth; aplikasi tidak menyimpan hash password pengguna di SQLite.
+- Atur SMTP kustom di Supabase Dashboard sebelum production.
 
 ### Proteksi login dan admin
 
 - Login user/admin dibatasi 5 percobaan gagal per IP dalam 15 menit melalui rate limiter proses Node.js; pembatasan ini akan reset saat proses server restart dan perlu shared store saat aplikasi dijalankan di beberapa instance.
-- Sesi membawa versi sesi akun. Reset password dan penonaktifan akun membatalkan sesi lama.
+- Supabase Auth mengelola masa berlaku access token dan refresh token; penonaktifan akun lokal menghentikan akses endpoint setelah status akun diperiksa ulang.
 - Role admin, whitelist CIDR, dan pemeriksaan IP dilakukan di backend pada setiap endpoint admin.
 - Aksi melihat overview, daftar user, detail user, dan log aktivitas tercatat di activity log.
 - `isActive` pada endpoint admin wajib berupa boolean.
 
 ### Isolasi data
 
-Query transaksi, keuntungan, kategori, barang, laporan, dan backup user menggunakan `req.user.id` dari session server. Produk juga dilindungi trigger SQLite agar `category_id` harus berasal dari kategori dengan `user_id` yang sama. Jangan pernah mengambil `user_id` otoritatif dari body/query browser.
+Query transaksi, keuntungan, kategori, barang, laporan, dan backup user menggunakan `req.user.id` hasil pemetaan identitas Supabase Auth ke pengguna lokal SQLite. Produk juga dilindungi trigger SQLite agar `category_id` harus berasal dari kategori dengan `user_id` yang sama. Jangan pernah mengambil `user_id` otoritatif dari body/query browser.
 
 ### Backup penuh database server
 
@@ -230,7 +214,7 @@ Untuk otomatisasi Windows, buat task di Task Scheduler yang menjalankan setiap h
 
 ### Catatan migrasi
 
-Ketika server versi ini pertama kali dijalankan, kolom `email_verified_at` dan `session_version` ditambahkan otomatis ke database lama tanpa menghapus tabel/data. Akun user lama akan diminta verifikasi saat login berikutnya. Karena itu, untuk mode development lokal, tautan verifikasi dicetak ke terminal; pada production, atur email delivery sebelum upgrade. Sesi lama yang belum memiliki `sessionVersion` akan diminta login ulang satu kali.
+Catatan transisi: kolom `supabase_user_id` ditambahkan otomatis ke tabel `users` SQLite pada saat server berjalan. Akun lama hanya ditautkan secara otomatis bila alamat emailnya sama dan sudah terverifikasi pada sistem lama serta Supabase Auth. Akun yang tidak memenuhi kondisi tersebut perlu ditinjau manual sebelum data lama dapat dihubungkan.
 
 Google sign-in memakai provider Supabase Auth. Tombol aplikasi tetap disembunyikan selama `ENABLE_GOOGLE_OAUTH=false`; setelah Client ID/Secret disimpan di Supabase Dashboard, set `ENABLE_GOOGLE_OAUTH=true` pada environment server dan restart aplikasi.
 
