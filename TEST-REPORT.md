@@ -1,84 +1,79 @@
-# Laporan Pengujian FeeKu Website
+# Laporan Pengujian FeeKu PostgreSQL Cutover
 
 Pembaruan: 22 November 2026
 
-## 1. Pemeriksaan statis source code
+## 1. Source code
 
-Pemeriksaan parser/format berkas sebelumnya lulus untuk:
+Syntax check JavaScript dan JSON pada branch `feat/postgres-business-store`:
 
-- `server.js`
-- `public/app.js`
-- `scripts/create-admin.js`
-- `scripts/import-legacy-sqlite.js`
-- `scripts/backup-database.js`
-- `package.json` (JSON valid)
+- `server.js` — lulus.
+- `public/app.js` — lulus.
+- `scripts/create-admin.js` — lulus.
+- `scripts/import-legacy-sqlite.js` — lulus.
+- `scripts/migrate-sqlite-to-postgres.js` — lulus.
+- `scripts/backup-database.js` — lulus.
+- `package.json` — JSON valid.
 
-Pemeriksaan source memastikan:
+## 2. Arsitektur API
 
-- Registrasi memakai `supabase.auth.signUp()`.
-- Login email/password memakai `supabase.auth.signInWithPassword()`.
-- Google sign-in memakai `supabase.auth.signInWithOAuth({ provider: 'google' })`.
-- Pemulihan password memakai `resetPasswordForEmail()` dan `updateUser()`.
-- Request API menyertakan Bearer access token Supabase.
-- Express memvalidasi access token melalui Supabase Auth sebelum menjalankan endpoint data.
-- Server hanya membaca role admin dari `app_metadata.role`, bukan `user_metadata`.
-- Script provisioning admin mewajibkan Supabase Secret Key dan menyediakan perintah grant/revoke.
-- Passport Google dan endpoint autentikasi lokal lama sudah dihapus dari jalur autentikasi aktif.
+Endpoint bisnis website sudah dialihkan pada branch ini dari database bisnis SQLite ke Supabase PostgREST/PostgreSQL:
 
-## 2. Pemeriksaan schema dan keamanan Supabase
+- Dashboard, Buku Kas, keuntungan, katalog kategori/produk, stok, laporan, backup/restore, serta endpoint baca lintas akun administrator memakai PostgreSQL.
+- Mutasi transaksi memakai RPC PostgreSQL agar perubahan header, rincian item, stok, dan margin berlangsung atomik.
+- Request pengguna menggunakan Bearer access token Supabase dan RLS. Operasi lintas akun administrator dan audit log tepercaya memakai Secret Key hanya di server.
+- SQLite tetap dipakai untuk session store dan dibaca sebagai sumber oleh script migrasi satu kali; bukan lagi penyimpanan transaksi aktif.
 
-Project FeeKu berstatus `ACTIVE_HEALTHY`. Tiga migration tercatat dan diterapkan:
+## 3. Migration Supabase
+
+Tujuh migration tercatat pada project FeeKu:
 
 - `20261121154555_initial_feeku_core_schema`
 - `20261121154714_refine_feeku_constraints_and_indexes`
 - `20261122000904_add_feeku_auth_profile_and_admin_provisioning`
+- `20261122012819_migrate_feeku_business_data_to_postgres`
+- `20261122012910_fix_feeku_category_import_conflict_target`
+- `20261122015733_migrate_business_data_and_postgres_api_permissions`
+- `20261122020611_feeku_rls_policy_cleanup`
 
-Hasil audit database 22 November 2026:
+File migration yang sudah diterapkan disertakan pada branch supaya riwayat schema dapat ditelusuri dari repository.
 
-- `auth.users`: 1 akun.
-- `public.profiles`: 1 profil dengan UUID yang cocok dengan akun Auth.
-- Akun tersebut sudah terverifikasi dan menggunakan provider Google.
-- `private.user_roles`: 0 baris; belum ada administrator yang diprovisikan.
-- Trigger `on_auth_user_created` tersedia untuk membuat profil setelah akun Auth dibuat.
-- Tabel bisnis pada schema `public` memiliki RLS dan kebijakan akses berbasis `auth.uid()`.
-- Schema `private` tidak dapat digunakan oleh role `authenticated`; role tersebut juga tidak dapat membaca atau menulis `private.user_roles`.
-- RPC provisioning admin ditolak untuk `anon` dan `authenticated`, serta hanya dapat dieksekusi oleh `service_role`.
+## 4. Uji database dan RLS
 
-Security Advisor masih menampilkan satu peringatan konfigurasi: **Leaked Password Protection Disabled**. Aktifkan perlindungan ini pada pengaturan Auth sebelum production. Tiga notifikasi RLS tanpa policy pada tabel internal schema `private` memang disengaja karena tabel tersebut tidak boleh diakses langsung dari client. Notifikasi unused index bersifat informasional pada database yang masih hampir kosong. Health Advisor tidak melaporkan temuan.
+**Status: LULUS untuk jalur transaksi uji.**
 
-## 3. Uji Google OAuth
+Pada koneksi SQL dengan role `authenticated` dan JWT subject akun uji:
 
-**Status: LULUS untuk login Google.**
+1. Buat kategori uji dan produk dengan stok 2, HPP 10, harga jual 20.
+2. Jalankan `public.save_feeku_transaction` untuk penjualan 1 unit.
+3. Pastikan stok menjadi 1, total transaksi 20, dan margin otomatis 10.
+4. Pastikan insert keuntungan manual milik akun sendiri tetap diizinkan.
 
-Pemilik project telah mencoba login Google melalui aplikasi dan mengonfirmasi prosesnya berhasil setelah Client ID/Client Secret Google diperbaiki di Supabase Dashboard.
+Semua assertion berhasil. Seluruh operasi uji berada di dalam transaksi SQL yang diakhiri dengan `ROLLBACK`; tidak ada data uji tertinggal. Pemeriksaan sesudahnya menunjukkan 0 kategori, produk, transaksi, rincian item, keuntungan, activity log, dan import run pada PostgreSQL.
 
-Log Supabase Auth dan audit database menguatkan hasil tersebut: event login dengan provider Google tercatat, satu akun Auth terverifikasi ditemukan, dan trigger membuat satu profil dengan UUID yang sama. Tidak ada Google Client Secret yang disimpan di repository.
+Kebijakan RLS ganda sudah dibersihkan. Pengguna tidak dapat mengakses schema `private` secara langsung atau menjalankan RPC provisioning admin. Catatan margin otomatis ditulis oleh trigger database, bukan oleh client.
 
-## 4. Uji email/password, verifikasi email, dan reset password
+## 5. SQLite → PostgreSQL data import
 
-**Status: BELUM DIUJI.**
+**Status: SCRIPT SIAP, IMPORT DATA NYATA BELUM DIJALANKAN.**
 
-Custom SMTP masih dinonaktifkan karena project belum memiliki domain pengirim yang terverifikasi. Supabase built-in email service dapat dipakai untuk pengujian terbatas, tetapi hanya mengirim ke alamat yang menjadi anggota organisasi/project dan memiliki batas pengiriman rendah. Layanan bawaan tersebut bukan konfigurasi email untuk aplikasi publik/production.
+`scripts/migrate-sqlite-to-postgres.js` sudah ditambahkan. Script membuat snapshot SQLite konsisten, memetakan akun lokal ke Supabase Auth melalui UUID atau email yang cocok dan terverifikasi, melakukan preflight semua akun yang dipilih, lalu memanggil RPC import yang idempotent per akun.
 
-Untuk pengujian terbatas, gunakan alamat email pengujian yang memang terdaftar sebagai anggota organisasi Supabase. Untuk menerima pendaftaran dan reset password dari pengguna publik, siapkan domain pengirim dan custom SMTP terlebih dahulu. Jangan menganggap registrasi email/password siap production sebelum alur verifikasi dan reset benar-benar diuji.
+Import aktual belum dapat dijalankan pada lingkungan pemeriksaan ini karena file database bisnis SQLite lama dari server pemilik project tidak disertakan. Jangan menyimpulkan data bisnis sudah berpindah hanya karena schema dan endpoint sudah disiapkan. Ikuti instruksi pada README dan jalankan script terhadap file SQLite asli sebelum memakai server PostgreSQL baru untuk operasional.
 
-## 5. Provisioning dan otorisasi administrator
+Batas import saat ini 10.000 baris per akun menurut penghitung migrator. SQLite asli dan snapshot harus disimpan sampai saldo, stok, transaksi, rincian penjualan, dan keuntungan hasil import diverifikasi.
 
-**Status: IMPLEMENTASI TERSEDIA, UJI PEMBERIAN ROLE BELUM DIJALANKAN.**
+## 6. Login administrator
 
-Script `npm run create-admin -- alamat-email` dan `npm run revoke-admin -- alamat-email` tersedia. Script memerlukan `SUPABASE_SECRET_KEY` pada environment server dan hanya memprovisikan akun Auth yang sudah ada serta terverifikasi.
+Halaman `/admin/login` pada branch ini sudah memiliki tampilan khusus: brand FeeKu, label area administrator, form email/password, tombol masuk ke panel, tautan kembali ke login pengguna, dan keterangan verifikasi role serta allowlist jaringan. Jalur login admin menolak akun pengguna biasa; akun administrator juga harus masuk melalui halaman admin.
 
-Belum ada akun yang diberi role admin. Ini disengaja sampai pemilik project menentukan akun administrator yang berwenang. Jangan menaruh Secret Key di frontend atau repository.
+Source code sudah lulus syntax check. Pemeriksaan visual browser dan HTTP end-to-end tetap harus dilakukan pada server pemilik project.
 
-## 6. Pengujian end-to-end yang masih diperlukan
+## 7. Advisor dan batas pengujian
 
-- Uji registrasi email/password, email verification, login, reset password, dan logout setelah email pengujian diizinkan atau custom SMTP tersedia.
-- Uji provisioning dan pencabutan role admin pada akun yang memang ditunjuk.
-- Pastikan akun pengguna biasa ditolak dari halaman dan seluruh endpoint admin.
-- Jalankan pengujian API dan alur bisnis pada server lokal/staging milik pemilik project sebelum deployment.
+- Health Advisor: tidak ada temuan.
+- Performance Advisor: notifikasi multiple permissive policies sudah hilang setelah pembersihan RLS. Peringatan unused index masih ada karena database bisnis masih kosong/nyaris tidak digunakan.
+- Security Advisor: notifikasi RLS tanpa policy pada tabel internal `private` memang disengaja; ada peringatan bahwa `public.restore_feeku_user_backup` merupakan SECURITY DEFINER yang dapat dipanggil oleh pengguna terautentikasi. Fungsi tersebut memperoleh target pengguna dari `auth.uid()` dan memanggil prosedur internal dengan UUID itu, bukan menerima target UUID dari browser; temuan ini tetap harus ditinjau sebelum production. Leaked Password Protection masih nonaktif pada konfigurasi Auth.
+- Login Google sebelumnya telah diuji berhasil. Uji browser untuk CRUD semua endpoint pada branch PostgreSQL ini belum dijalankan.
+- Belum ada role admin yang diberikan kepada akun mana pun.
 
-Google OAuth sudah diuji berhasil. Kelulusan Google OAuth tidak otomatis membuktikan seluruh alur email/password, admin, atau API bisnis telah lulus.
-
-## 7. Batas arsitektur penyimpanan data
-
-Supabase Auth sekarang menjadi sumber identitas. Namun endpoint transaksi, keuntungan, stok, laporan, dan ringkasan admin website masih menggunakan database SQLite di server. Tabel PostgreSQL FeeKu sudah disiapkan, tetapi data operasional SQLite belum dimigrasikan ke PostgreSQL dan endpoint bisnis belum dialihkan ke schema tersebut.
+Cutover belum boleh dianggap selesai sampai data SQLite asli berhasil diimpor, hasilnya diverifikasi, dan aplikasi PostgreSQL baru lulus pengujian staging.
