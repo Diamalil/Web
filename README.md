@@ -1,6 +1,6 @@
 # Buku Kas Website
 
-Versi website dari aplikasi Flutter Buku Kas pada repo `Diamalil/Aplikasi`. Implementasi ini menyediakan frontend responsif, backend Express, database SQLite server, login pengguna melalui email/password, verifikasi email, pemulihan akun, serta panel administrator terpisah. Google OAuth dinonaktifkan secara default dan hanya dapat diaktifkan secara eksplisit.
+Versi website dari aplikasi Flutter Buku Kas. Aplikasi memakai Supabase Auth untuk identitas pengguna, email/password, verifikasi email, pemulihan akun, dan Google sign-in. Backend Express memvalidasi access token Supabase dan saat ini masih memakai SQLite untuk data operasional lama (transaksi, keuntungan, stok, dan laporan). Schema PostgreSQL FeeKu disiapkan terpisah untuk migrasi data operasional berikutnya.
 
 ## 1. Hasil bedah aplikasi asli
 
@@ -26,8 +26,8 @@ Database aplikasi asli memakai `sqflite` dengan tabel `transaksi`, `keuntungan`,
 
 ## 2. Fitur website
 
-- **Pengguna:** daftar dan login melalui email/password; email wajib diverifikasi; reset password menggunakan tautan email. Google OAuth ditahan/nonaktif secara default.
-- **Panel admin:** halaman login terpisah di `/admin/login`; admin dibuat melalui perintah server, tidak ada pendaftaran admin publik, dan tidak ada login admin Google.
+- **Pengguna:** daftar dan login melalui Supabase Auth; email wajib diverifikasi; reset password menggunakan Supabase Auth; Google sign-in tersedia setelah provider Google dikonfigurasi pada Supabase.
+- **Panel admin:** halaman login terpisah di `/admin/login`; role diberikan melalui script server dengan Supabase Secret Key dan tidak tersedia pada form registrasi publik.
 - **Dashboard:** saldo, total uang masuk/keluar, ringkasan keuntungan, lima transaksi terakhir.
 - **Buku Kas:** tambah, edit, hapus, dan daftar transaksi; transaksi Masuk dapat memakai satu atau beberapa produk katalog, jumlah, serta harga jual per unit. Omzet penjualan masuk sebagai nilai transaksi penuh ke Dashboard.
 - **Keuntungan:** margin kotor penjualan tercatat otomatis sebagai pemasukan (atau pengeluaran bila transaksi merugi), sementara catatan keuntungan lain tetap dapat ditambahkan/diedit/dihapus manual. Catatan margin otomatis dikelola melalui transaksi asal agar tidak dobel.
@@ -42,13 +42,13 @@ Tampilan mempertahankan bahasa, warna hijau Material 3, kartu saldo, ringkasan m
 
 ```text
 Browser
-  └── public/index.html + styles.css + app.js
-        │  session cookie + CSRF token
+  └── Supabase JS SDK (publishable key)
+        │  Supabase Auth session / Bearer access token
         ▼
 Node.js / Express (server.js)
-  ├── autentikasi email/password
-  ├── Google OAuth 2.0 (opsional, perlu konfigurasi)
-  ├── role guard: user / admin
+  ├── validasi token melalui Supabase Auth
+  ├── email/password + verifikasi + reset + Google OAuth
+  ├── role guard berdasarkan app_metadata.role yang dikelola server
   ├── pembatasan jaringan untuk seluruh endpoint admin
   ├── REST API transaksi / keuntungan / stok / laporan
   └── activity_logs (audit trail)
@@ -89,32 +89,16 @@ Buka:
 - Admin: `http://localhost:3000/admin/login`
 - Health check: `http://localhost:3000/healthz`
 
-## 5. Membuat akun admin
+## 5. Membuat akun administrator
 
-Admin pertama dibuat secara eksplisit dari terminal server. Tidak ada kredensial admin bawaan di source code.
-
-Linux/macOS:
-
-```bash
-ADMIN_BOOTSTRAP_PASSWORD='password-kuat-minimal-12-karakter' npm run create-admin -- admin@domain.com
-```
-
-Windows PowerShell:
-
-```powershell
-$env:ADMIN_BOOTSTRAP_PASSWORD = 'password-kuat-minimal-12-karakter'
-npm run create-admin -- admin@domain.com
-Remove-Item Env:ADMIN_BOOTSTRAP_PASSWORD
-```
-
-Gunakan password unik dan jangan menyimpannya di repo. Script akan membuat akun admin baru atau mengubah akun dengan email tersebut menjadi admin. Jalankan sekali untuk bootstrap awal.
+**Panduan terbaru:** administrator dibuat melalui Supabase Auth, bukan akun lokal SQLite. Buat akun pengguna biasa terlebih dahulu, verifikasi email, lalu jalankan `npm run create-admin -- admin@domain.com` menggunakan `SUPABASE_SECRET_KEY` di environment server. Lihat bagian **Supabase Auth Integration (current)** di bagian bawah dokumen ini untuk detail provisioning dan pencabutan akses.
 
 ## 6. Kebijakan jaringan login admin
 
 Panel admin memiliki dua lapisan proteksi:
 
-1. Kredensial admin diperiksa di endpoint khusus `/api/auth/admin/login`.
-2. IP klien diperiksa pada saat login **dan setiap request endpoint admin**.
+1. Login admin memakai endpoint Supabase Auth yang sama seperti pengguna biasa; backend hanya menerima akun dengan claim `app_metadata.role=admin`.
+2. IP klien diperiksa saat sesi admin diverifikasi **dan pada setiap request endpoint admin**.
 
 Jika `ADMIN_ALLOWED_CIDRS` kosong, default yang diizinkan hanya loopback, private LAN IPv4 (`10/8`, `172.16/12`, `192.168/16`), serta IPv6 ULA/link-local. Ini mendukung akses lokal. Untuk akses melalui internet, tambahkan IP publik statis admin atau CIDR VPN tepercaya, misalnya:
 
@@ -126,31 +110,10 @@ ADMIN_ALLOWED_CIDRS=127.0.0.1/8,::1/128,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,
 
 Untuk akses melalui reverse proxy, set `TRUST_PROXY=1` hanya bila tepat satu proxy tepercaya berada di depan aplikasi. Jangan mempercayai header IP dari proxy yang tidak Anda kendalikan. Gunakan HTTPS di server publik.
 
-## 7. Login Google/Gmail
+## 7. Login Google
 
-Google login belum aktif sampai OAuth Client ID dan Client Secret dibuat di Google Cloud Console. Konfigurasikan OAuth consent screen, lalu buat OAuth 2.0 Client ID bertipe Web Application.
+Google sign-in sekarang menggunakan Supabase Auth. Jangan gunakan `/auth/google/callback` milik Passport lama. Ikuti langkah pada bagian **Google sign-in activation** di bagian bawah dokumen ini, termasuk callback Supabase `https://dvtnxezautjkeshsbdyk.supabase.co/auth/v1/callback`.
 
-Tambahkan URL callback berikut sebagai **Authorized redirect URI**:
-
-```text
-https://DOMAIN-ANDA/auth/google/callback
-```
-
-Untuk lokal:
-
-```text
-http://localhost:3000/auth/google/callback
-```
-
-Isi `.env`:
-
-```env
-APP_BASE_URL=https://DOMAIN-ANDA
-GOOGLE_CLIENT_ID=isi-client-id
-GOOGLE_CLIENT_SECRET=isi-client-secret
-```
-
-Restart server setelah mengubah `.env`. Google login hanya membuat akun role `user`; akun admin tidak dapat masuk lewat Google.
 
 ## 8. Deployment internet
 
@@ -196,55 +159,40 @@ Import menambahkan data Buku Kas, keuntungan, kategori, dan barang ke akun tujua
 
 ## 10. Keamanan dan batasan yang perlu diketahui
 
-- Password pengguna dan admin disimpan sebagai bcrypt hash; password asli tidak disimpan.
-- Session memakai cookie `HttpOnly`, `SameSite=Lax`, dan `Secure` di production.
+- Password dikelola dan di-hash oleh Supabase Auth; website tidak menyimpan password pengguna.
+- Browser menyimpan sesi Supabase melalui Supabase JS SDK; access token dikirim sebagai Bearer token dan divalidasi server ke Supabase Auth.
 - Mutasi API menggunakan CSRF token, validasi input, serta rate limit.
-- Data pengguna diisolasi berdasarkan user ID dari session server.
+- Role administrator berasal dari `app_metadata.role` yang hanya diubah melalui script server terpercaya; `user_metadata` tidak dipakai untuk otorisasi.
+- Data operasional SQLite sementara di-scope menggunakan ID pengguna lokal yang ditautkan ke UUID Supabase Auth.
 - Admin melihat data sensitif finansial seluruh pengguna. Akses admin harus diberikan hanya kepada pihak yang berwenang; penggunaan akses tersebut dicatat di activity log.
-- Login email/password mendukung verifikasi email dan reset password melalui email. Untuk pengujian lokal, `EMAIL_PROVIDER=console` mencetak tautan ke terminal; untuk production, layanan email seperti Resend wajib dikonfigurasi dan diuji.
+- Verifikasi email dan reset password dikirim oleh Supabase Auth. Atur SMTP kustom di dashboard Supabase untuk penggunaan production.
 - Backup website berupa JSON; backup SQLite dari aplikasi Flutter lama diimpor melalui script migrasi di atas.
 - SQLite cocok untuk satu server dan beban kecil/menengah. Untuk trafik besar atau beberapa server aplikasi, migrasikan database ke PostgreSQL dan gunakan session store terdistribusi.
-- Google OAuth memerlukan pengaturan eksternal dari pemilik domain/proyek Google; source code saja tidak dapat mengaktifkan credential tersebut.
+- Google sign-in memerlukan Google OAuth Client ID/Secret yang disimpan pada Supabase Dashboard. Ikuti bagian **Google sign-in activation** di bagian bawah dokumen ini; source code saja tidak dapat membuat kredensial Google.
 
 
 ## 11. Pembaruan keamanan versi 1.1
 
-Versi ini menambahkan alur verifikasi email dan pemulihan password, pembatasan percobaan login, revokasi sesi, audit aktivitas admin, batas kepemilikan kategori-barang di SQLite, serta script backup database penuh.
+Catatan historis: versi 1.1 dahulu menangani verifikasi email dan pemulihan password di backend lokal. Alur autentikasi tersebut kini sudah digantikan Supabase Auth. Pembatasan percobaan login, audit aktivitas admin, batas kepemilikan kategori-barang SQLite, serta backup database tetap dipakai.
 
 ### Email verification dan reset password
 
-- Pendaftaran user membutuhkan email yang bisa menerima tautan verifikasi.
-- Token verifikasi berlaku 30 menit, token reset password berlaku 20 menit, disimpan dalam bentuk SHA-256 hash dan hanya dapat dipakai sekali.
-- Password baru dan password saat pendaftaran minimal 12 karakter.
-- Reset password menaikkan `session_version`, sehingga sesi lama otomatis tidak berlaku.
-- Login akun yang belum diverifikasi akan mengirim tautan verifikasi baru jika layanan email tersedia.
-- Respons lupa password tidak membocorkan apakah sebuah email terdaftar.
-
-**Development lokal:** `.env.example` menggunakan `EMAIL_PROVIDER=console`. Tautan verifikasi/reset hanya dicetak ke terminal server untuk uji lokal. Jangan gunakan mode ini untuk production.
-
-**Production:** buat API key Resend, verifikasi domain pengirim, lalu isi `.env`:
-
-```env
-NODE_ENV=production
-EMAIL_PROVIDER=resend
-RESEND_API_KEY=API_KEY_RESMU
-EMAIL_FROM=Buku Kas <noreply@domain-terverifikasi-kamu.com>
-APP_BASE_URL=https://domain-kamu
-```
-
-Source menggunakan API `POST https://api.resend.com/emails` ([dokumentasi resmi Resend](https://resend.com/docs/api-reference/emails/send-email)); API key hanya berada di server. Jangan taruh API key pada `public/app.js` atau commit ke Git.
+- Registrasi email/password menggunakan Supabase Auth.
+- Supabase mengirim tautan verifikasi dan pemulihan berdasarkan konfigurasi URL Redirect.
+- Password dikelola oleh Supabase Auth; aplikasi tidak menyimpan hash password pengguna di SQLite.
+- Atur SMTP kustom di Supabase Dashboard sebelum production.
 
 ### Proteksi login dan admin
 
 - Login user/admin dibatasi 5 percobaan gagal per IP dalam 15 menit melalui rate limiter proses Node.js; pembatasan ini akan reset saat proses server restart dan perlu shared store saat aplikasi dijalankan di beberapa instance.
-- Sesi membawa versi sesi akun. Reset password dan penonaktifan akun membatalkan sesi lama.
+- Supabase Auth mengelola masa berlaku access token dan refresh token; penonaktifan akun lokal menghentikan akses endpoint setelah status akun diperiksa ulang.
 - Role admin, whitelist CIDR, dan pemeriksaan IP dilakukan di backend pada setiap endpoint admin.
 - Aksi melihat overview, daftar user, detail user, dan log aktivitas tercatat di activity log.
 - `isActive` pada endpoint admin wajib berupa boolean.
 
 ### Isolasi data
 
-Query transaksi, keuntungan, kategori, barang, laporan, dan backup user menggunakan `req.user.id` dari session server. Produk juga dilindungi trigger SQLite agar `category_id` harus berasal dari kategori dengan `user_id` yang sama. Jangan pernah mengambil `user_id` otoritatif dari body/query browser.
+Query transaksi, keuntungan, kategori, barang, laporan, dan backup user menggunakan `req.user.id` hasil pemetaan identitas Supabase Auth ke pengguna lokal SQLite. Produk juga dilindungi trigger SQLite agar `category_id` harus berasal dari kategori dengan `user_id` yang sama. Jangan pernah mengambil `user_id` otoritatif dari body/query browser.
 
 ### Backup penuh database server
 
@@ -266,9 +214,9 @@ Untuk otomatisasi Windows, buat task di Task Scheduler yang menjalankan setiap h
 
 ### Catatan migrasi
 
-Ketika server versi ini pertama kali dijalankan, kolom `email_verified_at` dan `session_version` ditambahkan otomatis ke database lama tanpa menghapus tabel/data. Akun user lama akan diminta verifikasi saat login berikutnya. Karena itu, untuk mode development lokal, tautan verifikasi dicetak ke terminal; pada production, atur email delivery sebelum upgrade. Sesi lama yang belum memiliki `sessionVersion` akan diminta login ulang satu kali.
+Catatan transisi: kolom `supabase_user_id` ditambahkan otomatis ke tabel `users` SQLite pada saat server berjalan. Akun lama hanya ditautkan secara otomatis bila alamat emailnya sama dan sudah terverifikasi pada sistem lama serta Supabase Auth. Akun yang tidak memenuhi kondisi tersebut perlu ditinjau manual sebelum data lama dapat dihubungkan.
 
-Google OAuth dibuat opt-in eksplisit: walaupun `GOOGLE_CLIENT_ID` dan `GOOGLE_CLIENT_SECRET` terisi, OAuth tetap tidak aktif kecuali `ENABLE_GOOGLE_OAUTH=true`.
+Google sign-in memakai provider Supabase Auth. Tombol aplikasi tetap disembunyikan selama `ENABLE_GOOGLE_OAUTH=false`; setelah Client ID/Secret disimpan di Supabase Dashboard, set `ENABLE_GOOGLE_OAUTH=true` pada environment server dan restart aplikasi.
 
 
 ## 12. Katalog produk, HPP, harga jual, dan margin (versi 1.2)
@@ -324,3 +272,46 @@ Transaksi yang diedit akan mengembalikan stok dari baris sebelumnya, memperbarui
 5. Hapus transaksi. Hasil: stok dikembalikan dan keuntungan otomatis terkait dihapus.
 6. Uji produk milik user lain dan stok tidak cukup. Server harus menolak transaksi tanpa mengubah saldo, stok, atau keuntungan.
 7. Backup dan restore format v2 pada akun pengujian; rincian penjualan dan tautan margin harus tetap konsisten.
+
+
+## Supabase Auth Integration (current)
+
+Supabase Auth is the identity provider for the website. The browser uses the pinned `@supabase/supabase-js` browser SDK and the Supabase publishable key. The Express API verifies every Bearer access token against Supabase Auth before accessing the existing SQLite business-data store. The Supabase secret key is used only by the local administrator provisioning script and must never be exposed in frontend code or committed to Git.
+
+Required server settings in `.env`:
+
+```dotenv
+SUPABASE_URL=https://dvtnxezautjkeshsbdyk.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+SUPABASE_SECRET_KEY=sb_secret_...
+ENABLE_GOOGLE_OAUTH=false
+```
+
+Email/password registration, email verification, password recovery, and session refresh use Supabase Auth. Configure the project's Auth URL Configuration with the website Site URL and redirect allow-list entries for `http://localhost:3000/auth/callback`, `http://localhost:3000/auth/reset-password`, and the equivalent HTTPS production URLs. Configure a custom SMTP sender in Supabase before using email verification and recovery in production.
+
+### Google sign-in activation
+
+1. Create a Google OAuth client with application type **Web application** in Google Cloud.
+2. Add the website origin (for example `http://localhost:3000`) to Authorized JavaScript origins.
+3. Add this Supabase callback to Authorized redirect URIs: `https://dvtnxezautjkeshsbdyk.supabase.co/auth/v1/callback`.
+4. Open Supabase Dashboard → Authentication → Sign In / Providers → Google. Enable the provider and save the Google Client ID and Client Secret there. Do not put the Google client secret in the website repository.
+5. Add the website callback URL to Supabase Auth URL Configuration's redirect allow-list: `http://localhost:3000/auth/callback` and the HTTPS production URL.
+6. Set `ENABLE_GOOGLE_OAUTH=true` in the website server environment and restart/redeploy the server.
+
+### Administrator provisioning
+
+Public registration creates standard users only. To grant administrator access, first create a standard account through the website and verify its email. Then run this command from the server project directory:
+
+```powershell
+npm run create-admin -- admin@domain.com
+```
+
+To revoke administrator access:
+
+```powershell
+npm run revoke-admin -- admin@domain.com
+```
+
+The script requires `SUPABASE_SECRET_KEY`, writes the protected `private.user_roles` table using the restricted provisioning RPC, and mirrors `app_metadata.role=admin` for backend authorization. The server never trusts user-editable `user_metadata` for authorization. A promoted or demoted account should sign out and sign in again to refresh its session.
+
+**Data-store note:** authentication now uses Supabase Auth, but existing ledger, inventory, reports, and admin overview endpoints still use the SQLite database and map the Supabase Auth UUID to a local user row. This integration does not yet migrate existing business data to the PostgreSQL FeeKu tables.
