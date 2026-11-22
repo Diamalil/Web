@@ -13,7 +13,6 @@ const { rateLimit } = require('express-rate-limit');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
-const BASE_URL = (process.env.APP_BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_PUBLISHABLE_KEY = String(process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || '');
 const SUPABASE_ORIGIN = (() => {
@@ -226,7 +225,7 @@ const recoveryLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 5, standard
 const writeLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: 'draft-7', legacyHeaders: false });
 
 app.use('/api', writeLimiter, (req, res, next) => {
-  const csrfManagedHere = ['/auth/register', '/auth/login', '/auth/admin/login', '/auth/logout'].includes(req.path);
+  const csrfManagedHere = req.path === '/auth/logout';
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && !csrfManagedHere) return requireCsrf(req, res, next);
   next();
 });
@@ -304,93 +303,6 @@ function recordActivity(req, action, entityType, entityId = null, metadata = {},
     JSON.stringify(metadata || {}),
     req.ip || null
   );
-}
-const emailProvider = String(process.env.EMAIL_PROVIDER || (process.env.NODE_ENV === 'production' ? 'none' : 'console')).toLowerCase();
-function emailDeliveryReady() {
-  if (emailProvider === 'console') return process.env.NODE_ENV !== 'production';
-  return emailProvider === 'resend' && Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM);
-}
-function escapeEmailHtml(value) {
-  return String(value ?? '').replace(/[&<>\"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '\"':'&quot;', "'":'&#39;' }[char]));
-}
-async function sendEmail({ to, subject, html, text }) {
-  if (emailProvider === 'console' && process.env.NODE_ENV !== 'production') {
-    console.log(`\n[EMAIL DEVELOPMENT ONLY]\nTo: ${to}\nSubject: ${subject}\n${text || html}\n`);
-    return;
-  }
-  if (!emailDeliveryReady()) throw new Error('Layanan email belum dikonfigurasi.');
-  const response = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-      'Content-Type': 'application/json',
-      'User-Agent': 'buku-kas-website/1.1'
-    },
-    body: JSON.stringify({ from: process.env.EMAIL_FROM, to: [to], subject, html, text })
-  });
-  if (!response.ok) {
-    const errorBody = await response.text().catch(() => '');
-    console.error(`Email provider returned HTTP ${response.status}: ${errorBody.slice(0, 500)}`);
-    throw new Error('Email tidak dapat dikirim.');
-  }
-}
-function createAuthToken(userId, purpose, minutes) {
-  const token = crypto.randomBytes(32).toString('base64url');
-  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-  db.prepare('DELETE FROM auth_tokens WHERE user_id=? AND purpose=?').run(userId, purpose);
-  db.prepare('INSERT INTO auth_tokens(user_id,purpose,token_hash,expires_at_ms) VALUES(?,?,?,?)')
-    .run(userId, purpose, tokenHash, Date.now() + minutes * 60 * 1000);
-  return token;
-}
-async function sendVerificationEmail(user) {
-  if (!emailDeliveryReady()) throw new Error('Pengiriman email belum dikonfigurasi.');
-  const token = createAuthToken(user.id, 'verify_email', 30);
-  const link = `${BASE_URL}/verify-email?token=${encodeURIComponent(token)}`;
-  try {
-    await sendEmail({
-      to: user.email,
-      subject: 'Verifikasi email Buku Kas',
-      html: `<p>Halo ${escapeEmailHtml(user.name)},</p><p>Konfirmasi alamat email untuk mengaktifkan akun Buku Kas.</p><p><a href=\"${link}\">Verifikasi alamat email</a></p><p>Tautan berlaku 30 menit dan hanya dapat digunakan sekali.</p>`,
-      text: `Halo ${user.name}, buka tautan berikut untuk verifikasi email (berlaku 30 menit): ${link}`
-    });
-  } catch (error) {
-    db.prepare('DELETE FROM auth_tokens WHERE user_id=? AND purpose=\'verify_email\'').run(user.id);
-    throw error;
-  }
-}
-async function sendPasswordResetEmail(user) {
-  if (!emailDeliveryReady()) throw new Error('Pengiriman email belum dikonfigurasi.');
-  const token = createAuthToken(user.id, 'reset_password', 20);
-  const link = `${BASE_URL}/reset-password?token=${encodeURIComponent(token)}`;
-  try {
-    await sendEmail({
-      to: user.email,
-      subject: 'Atur ulang password Buku Kas',
-      html: `<p>Halo ${escapeEmailHtml(user.name)},</p><p>Gunakan tautan berikut untuk membuat password baru.</p><p><a href=\"${link}\">Atur ulang password</a></p><p>Tautan berlaku 20 menit. Abaikan email ini bila kamu tidak meminta reset password.</p>`,
-      text: `Atur ulang password Buku Kas (berlaku 20 menit): ${link}`
-    });
-  } catch (error) {
-    db.prepare('DELETE FROM auth_tokens WHERE user_id=? AND purpose=\'reset_password\'').run(user.id);
-    throw error;
-  }
-}
-function findValidAuthToken(token, purpose) {
-  if (typeof token !== 'string' || token.length < 32 || token.length > 200) return null;
-  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-  return db.prepare('SELECT t.*,u.email,u.name,u.role,u.is_active FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=? AND t.purpose=? AND t.expires_at_ms>?')
-    .get(tokenHash, purpose, Date.now()) || null;
-}
-
-function asyncSessionLogin(req, user) {
-  return new Promise((resolve, reject) => {
-    req.session.regenerate(err => {
-      if (err) return reject(err);
-      req.session.userId = user.id;
-      req.session.sessionVersion = Number(user.session_version || 1);
-      req.session.csrfToken = crypto.randomBytes(32).toString('hex');
-      req.session.save(saveErr => saveErr ? reject(saveErr) : resolve(req.session.csrfToken));
-    });
-  });
 }
 function requireCsrf(req, res, next) {
   const expected = req.session?.csrfToken;
