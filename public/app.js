@@ -57,6 +57,9 @@ async function api(url, options = {}) {
   if (!response.ok) {
     if (response.status === 401 && state.user) {
       state.user = null;
+      if (state.supabase) {
+        try { await state.supabase.auth.signOut({ scope: 'local' }); } catch (_) {}
+      }
       showAuth(location.pathname.startsWith('/admin'));
     }
     throw new Error(payload.error || `Permintaan gagal (${response.status}).`);
@@ -408,10 +411,14 @@ async function openUserDetails(id) {
 }
 
 async function logout() {
-  try { await api('/api/auth/logout', { method:'POST', body:{} }); } catch (_) {}
+  try { await api('/api/auth/logout', { method: 'POST', body: {} }); } catch (_) {}
+  if (state.supabase) {
+    try { await state.supabase.auth.signOut({ scope: 'local' }); } catch (_) {}
+  }
   state.user = null; state.isAdmin = false; state.page = 'dashboard'; state.csrf = '';
   history.replaceState({}, '', '/');
-  await getCsrf(); showAuth(false);
+  await getCsrf();
+  showAuth(false, false, 'login');
 }
 async function downloadBackup() {
   const res = await fetch('/api/settings/backup', { credentials:'same-origin' });
