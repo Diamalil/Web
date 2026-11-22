@@ -1,58 +1,50 @@
-# Laporan Pengujian Buku Kas Website 1.2.0
+# Laporan Pengujian FeeKu Website
 
-Tanggal: 9 November 2026
+Pembaruan: 22 November 2026
 
-## Pemeriksaan statis
+## Pemeriksaan statis integrasi Supabase Auth
 
-- `npm run check` — lulus untuk `server.js`, `public/app.js`, `scripts/create-admin.js`, `scripts/import-legacy-sqlite.js`, dan `scripts/backup-database.js`.
-- Paket produksi tidak menyertakan `.env`, `node_modules`, database pengguna, maupun database session.
-- UI transaksi menampilkan rincian produk, kuantitas, dan harga jual/unit pada daftar transaksi, Dashboard, dan laporan.
+Berkas berikut sudah diperiksa ulang dengan pemeriksaan parser JavaScript:
 
-## Pengujian rumus harga
+- `server.js` — lulus.
+- `public/app.js` — lulus.
+- `scripts/create-admin.js` — lulus.
+- `scripts/import-legacy-sqlite.js` — lulus.
+- `scripts/backup-database.js` — lulus.
+- `package.json` — JSON valid.
 
-Pengujian langsung pada fungsi `calculateProductPricing()` yang digunakan server:
+Pemeriksaan source memastikan:
 
-| Metode | Input | Harga jual hasil | Status |
-|---|---|---:|---|
-| Manual | HPP Rp9.800; harga Rp12.000 | Rp12.000 | Lulus |
-| Markup | HPP Rp9.800; markup 20% | Rp11.760 | Lulus |
-| Target margin | HPP Rp9.800; margin 20% | Rp12.250 | Lulus |
-| Laba tetap | HPP Rp9.800; laba Rp2.200 | Rp12.000 | Lulus |
-| Batas margin | Target margin 100% | Ditolak | Lulus |
+- Registrasi memakai `supabase.auth.signUp()`.
+- Login memakai `supabase.auth.signInWithPassword()`.
+- Google sign-in memakai `supabase.auth.signInWithOAuth({ provider: 'google' })`.
+- Pemulihan password memakai `resetPasswordForEmail()` dan `updateUser()`.
+- Request API menyertakan Bearer access token Supabase.
+- Express memvalidasi access token melalui endpoint Supabase Auth sebelum menjalankan endpoint data.
+- Server hanya membaca role admin dari `app_metadata.role`, tidak dari `user_metadata`.
+- Script provisioning admin mewajibkan Supabase Secret Key, memakai RPC terbatas, dan mendukung pencabutan role.
+- Passport Google dan endpoint login/register lokal lama sudah dihapus dari jalur autentikasi aktif.
 
-## Pengujian database SQLite sintetis
+## Pemeriksaan schema Supabase
 
-Pengujian menggunakan database sementara yang diturunkan dari skema migrasi aktual. Database pengguna dalam ZIP sumber tidak digunakan.
+- Migration `20261122000904_add_feeku_auth_profile_and_admin_provisioning` tercatat pada project FeeKu.
+- Trigger `on_auth_user_created` terpasang pada `auth.users` dan membuat baris `public.profiles`.
+- RPC provisioning admin hanya dapat dieksekusi oleh `service_role`; akses `anon` dan `authenticated` ditolak.
+- Tabel `private.user_roles` tidak dapat dibaca/ditulis melalui privilege pengguna `authenticated`.
+- Belum ada akun Auth, profil, ataupun role admin yang dibuat selama implementasi.
 
-1. Migrasi skema lama — lulus; tabel lama tetap ada.
-2. Backfill harga jual — lulus; nilai lama `products.price` disalin ke `sale_price`.
-3. Penjualan 2 pcs × Rp12.000 dengan HPP Rp9.800 — lulus; omzet Rp24.000 dan margin Rp4.400.
-4. Pengurangan stok dari 10 menjadi 8 — lulus.
-5. Penjualan tercatat sekali sebagai omzet Buku Kas; margin tersimpan terpisah pada `profits` — lulus.
-6. Trigger kepemilikan — lulus; user B tidak dapat menautkan barang milik user A ke transaksi user B.
-7. Penghapusan transaksi setelah stok dipulihkan — lulus; stok kembali ke 10 dan keuntungan otomatis terkait hilang melalui foreign key.
-8. `PRAGMA foreign_key_check` — lulus tanpa pelanggaran.
+## Batasan yang belum diuji end-to-end
 
-## Perilaku transaksi yang diimplementasikan
+HTTP/browser end-to-end belum dapat dinyatakan lulus di lingkungan pemeriksaan ini. Belum ada akun email terverifikasi, SMTP project belum diuji, Google OAuth Client ID/Secret belum diberikan atau disimpan di Supabase Dashboard, dan aplikasi belum dijalankan dengan environment lokal/production pemilik proyek.
 
-- Transaksi Masuk dapat berupa penjualan dari katalog atau pemasukan manual.
-- Penjualan katalog menyimpan snapshot nama produk, kuantitas, harga jual, dan HPP.
-- Stok berkurang saat transaksi penjualan disimpan.
-- Keuntungan otomatis dihitung sebagai omzet dikurangi total HPP dan dicatat pada halaman Keuntungan; jika negatif, dicatat sebagai pengeluaran keuntungan.
-- Omzet penuh masuk ke Dashboard/Buku Kas. Margin tidak ditambahkan lagi ke saldo kas.
-- Edit transaksi mengembalikan stok lama lalu menerapkan rincian baru dalam satu transaksi database.
-- Hapus transaksi mengembalikan stok dan menghapus catatan keuntungan otomatis terkait.
-- Backup akun v2 membawa snapshot item dan konfigurasi harga; restore masih mendukung backup v1.
+Pengujian penerimaan yang masih diperlukan:
 
-## Belum dapat dinyatakan lulus
+1. Isi `.env` dengan Supabase URL, Publishable Key, Secret Key (server saja), dan `SESSION_SECRET`.
+2. Atur Supabase Auth Site URL dan Redirect URLs untuk localhost serta domain production.
+3. Konfigurasikan SMTP Supabase, lalu uji registrasi, verifikasi email, login, reset password, dan logout.
+4. Buat Google OAuth Web Client, masukkan Client ID/Secret ke Supabase Auth → Sign In / Providers → Google, lalu aktifkan `ENABLE_GOOGLE_OAUTH=true` pada server.
+5. Buat akun pengguna biasa, verifikasi email, lalu uji `npm run create-admin -- admin@domain.com` dan `npm run revoke-admin -- admin@domain.com`.
+6. Uji bahwa pengguna biasa ditolak dari halaman dan endpoint admin.
+7. Jalankan seluruh alur di staging sebelum deployment production.
 
-HTTP/browser end-to-end belum dijalankan di lingkungan pemeriksaan ini karena dependency runtime tidak terpasang di container. Maka boot Express, interaksi UI aktual, pengiriman email, transaksi via HTTP, dan backup/restore route harus dikonfirmasi pada komputer pemilik proyek.
-
-Perintah pemeriksaan pada komputer pemilik proyek:
-
-```powershell
-npm run check
-npm start
-```
-
-Uji penerimaan yang disarankan tercantum di README bagian 12. Gunakan akun pengujian atau database salinan sebelum mencoba perubahan transaksi pada data utama.
+**Catatan penyimpanan data:** Supabase Auth kini menjadi sumber identitas, tetapi endpoint transaksi, keuntungan, stok, dan laporan masih membaca SQLite. Integrasi ini belum memigrasikan data operasional SQLite ke tabel PostgreSQL FeeKu.
