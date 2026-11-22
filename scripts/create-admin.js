@@ -21,11 +21,11 @@ if (!/^\S+@\S+\.\S+$/.test(email) || email.length > 254) {
   process.exit(1);
 }
 async function request(path, method = 'GET', body) {
-  const response = await fetch(\`\${SUPABASE_URL}\${path}\`, {
+  const response = await fetch(`${SUPABASE_URL}${path}`, {
     method,
     headers: {
       apikey: SUPABASE_SECRET_KEY,
-      Authorization: \`Bearer \${SUPABASE_SECRET_KEY}\`,
+      Authorization: `Bearer ${SUPABASE_SECRET_KEY}`,
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' })
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -33,7 +33,7 @@ async function request(path, method = 'GET', body) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const message = payload.msg || payload.message || payload.error_description || payload.error || \`HTTP \${response.status}\`;
+    const message = payload.msg || payload.message || payload.error_description || payload.error || `HTTP ${response.status}`;
     throw new Error(String(message));
   }
   return payload;
@@ -42,7 +42,7 @@ async function request(path, method = 'GET', body) {
 async function findUserByEmail(targetEmail) {
   const perPage = 100;
   for (let page = 1; page <= 100; page += 1) {
-    const result = await request(\`/auth/v1/admin/users?page=\${page}&per_page=\${perPage}\`);
+    const result = await request(`/auth/v1/admin/users?page=${page}&per_page=${perPage}`);
     const users = Array.isArray(result.users) ? result.users : [];
     const found = users.find(user => String(user.email || '').toLowerCase() === targetEmail);
     if (found) return found;
@@ -54,16 +54,16 @@ async function findUserByEmail(targetEmail) {
 async function main() {
   const user = await findUserByEmail(email);
   if (!user) {
-    throw new Error(\`Akun Supabase Auth dengan email \${email} belum ada. Daftar sebagai pengguna biasa, verifikasi email, lalu jalankan provisioning admin.\`);
+    throw new Error(`Akun Supabase Auth dengan email ${email} belum ada. Daftar sebagai pengguna biasa, verifikasi email, lalu jalankan provisioning admin.`);
   }
 
   const existingMetadata = user.app_metadata && typeof user.app_metadata === 'object' ? user.app_metadata : {};
   if (REVOKE) {
-    await request(\`/auth/v1/admin/users/\${encodeURIComponent(user.id)}\`, 'PUT', {
+    await request(`/auth/v1/admin/users/${encodeURIComponent(user.id)}`, 'PUT', {
       app_metadata: { ...existingMetadata, role: 'user' }
     });
     await request('/rest/v1/rpc/revoke_feeku_admin', 'POST', { target_user_id: user.id });
-    console.log(\`Role administrator dicabut dari \${email}. Pengguna perlu login ulang untuk memperbarui sesi.\`);
+    console.log(`Role administrator dicabut dari ${email}. Pengguna perlu login ulang untuk memperbarui sesi.`);
     return;
   }
 
@@ -76,10 +76,10 @@ async function main() {
     target_user_id: user.id,
     grantor_user_id: null
   });
-  await request(\`/auth/v1/admin/users/\${encodeURIComponent(user.id)}\`, 'PUT', {
+  await request(`/auth/v1/admin/users/${encodeURIComponent(user.id)}`, 'PUT', {
     app_metadata: { ...existingMetadata, role: 'admin' }
   });
-  console.log(\`Role administrator berhasil diberikan kepada \${email}. Silakan login ulang.\`);
+  console.log(`Role administrator berhasil diberikan kepada ${email}. Silakan login ulang.`);
 }
 
 main().catch(error => {
