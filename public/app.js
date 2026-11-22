@@ -113,55 +113,55 @@ function pageLayout(content) {
     </div>`;
 }
 
-function authMarkup(adminMode = false, register = false, mode = 'login', notice = '') {
-  if (adminMode) {
-    return '<main class="admin-auth-page"><section class="admin-auth-shell" aria-labelledby="admin-auth-title">' +
-      '<div class="admin-auth-brand"><span class="admin-auth-mark">F</span><span><strong>FeeKu</strong><small>ADMIN CONSOLE</small></span></div>' +
-      '<div class="admin-login-label"><span aria-hidden="true">◆</span> AREA ADMINISTRATOR</div>' +
-      '<header class="admin-auth-heading"><h1 id="admin-auth-title">Login Administrator</h1><p>Masuk untuk mengelola pengguna dan memantau aktivitas FeeKu.</p></header>' +
-      (notice ? '<div class="notice" role="status">' + escapeHtml(notice) + '</div>' : '') +
-      '<form class="admin-auth-form" id="auth-form" data-admin="true" data-register="false" data-mode="login">' +
-        '<div class="field"><label for="auth-email">Email</label><input id="auth-email" name="email" type="email" autocomplete="username" placeholder="nama@email.com" required></div>' +
-        '<div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" autocomplete="current-password" placeholder="Masukkan password" required></div>' +
-        '<div id="auth-error" class="admin-auth-error" role="alert" aria-live="polite"></div>' +
-        '<button class="button button-primary" type="submit">Masuk ke Panel Admin</button>' +
-      '</form>' +
-      '<div class="admin-auth-footer"><a class="text-link" href="/">Kembali ke login pengguna</a></div>' +
-      '<div class="admin-auth-security"><span aria-hidden="true">▣</span><span>Akses administrator dibatasi oleh verifikasi role dan allowlist jaringan pada server.</span></div>' +
-    '</section></main>';
-  }
-  const title = adminMode ? 'Login Administrator' : mode === 'forgot' ? 'Pulihkan akun' : (register ? 'Buat akun Buku Kas' : 'Selamat datang kembali');
-  const subtitle = adminMode
-    ? 'Masuk melalui jaringan yang diizinkan. Akun admin tidak menggunakan login Google.'
-    : mode === 'forgot' ? 'Masukkan email akun terverifikasi untuk menerima tautan reset password.'
+function authMarkup(_adminMode = false, register = false, mode = 'login', notice = '') {
+  const title = mode === 'forgot' ? 'Pulihkan akun' : (register ? 'Buat akun FeeKu' : 'Selamat datang kembali');
+  const subtitle = mode === 'forgot'
+    ? 'Masukkan email akun terverifikasi untuk menerima tautan reset password.'
     : (register ? 'Buat akun untuk mulai mencatat keuangan dan stok barang.' : 'Masuk untuk melihat ringkasan keuangan dan mengelola catatan Anda.');
-  const fields = `${register ? '<div class=\"field\"><label for=\"auth-name\">Nama</label><input id=\"auth-name\" name=\"name\" autocomplete=\"name\" placeholder=\"Nama Anda\" required maxlength=\"100\"></div>' : ''}
-    <div class=\"field\"><label for=\"auth-email\">Email</label><input id=\"auth-email\" name=\"email\" type=\"email\" autocomplete=\"username\" placeholder=\"nama@email.com\" required></div>
-    ${mode === 'forgot' ? '' : `<div class=\"field\"><label for=\"auth-password\">Password</label><input id=\"auth-password\" name=\"password\" type=\"password\" autocomplete=\"${register ? 'new-password' : 'current-password'}\" placeholder=\"${register ? 'Minimal 12 karakter' : 'Masukkan password'}\" required minlength=\"${register ? 12 : 1}\"></div>`}`;
-  return `<div class=\"auth-page\">
-    <section class=\"auth-art\">
-      <div class=\"auth-brand\"><span class=\"brand-mark\">▤</span><span>Buku Kas</span></div>
-      <div class=\"auth-art-content\"><h1>Keuangan tercatat.<br>Usaha lebih terarah.</h1><p>Semua transaksi, keuntungan, stok, dan laporan tersusun di satu tempat. Tetap sederhana seperti aplikasi aslinya, kini dapat diakses dari berbagai perangkat.</p>
-        <div class=\"auth-feature-list\"><div class=\"auth-feature\"><span class=\"auth-check\">✓</span>Catat uang masuk dan keluar</div><div class=\"auth-feature\"><span class=\"auth-check\">✓</span>Pantau keuntungan dan stok barang</div><div class=\"auth-feature\"><span class=\"auth-check\">✓</span>Unduh backup dan laporan PDF</div></div>
-      </div>
-      <div class=\"auth-art-footer\">Buku Kas · Versi Website</div>
-    </section>
-    <section class=\"auth-panel\"><div class=\"auth-form-wrap\">
-      ${adminMode ? '<div class=\"admin-login-label\">◆ AREA ADMIN</div>' : ''}
-      <div class=\"auth-heading\"><h2>${title}</h2><p>${subtitle}</p></div>
-      ${notice ? `<div class=\"notice\" role=\"status\">${escapeHtml(notice)}</div>` : ''}
-      <form class=\"auth-form\" id=\"auth-form\" data-admin=\"${adminMode}\" data-register=\"${register}\" data-mode=\"${mode}\">
-        ${fields}
-        <div id=\"auth-error\" class=\"muted\" style=\"font-size:11px;min-height:16px\" role=\"alert\"></div>
-        <button class=\"button button-primary\" type=\"submit\">${adminMode ? 'Masuk ke Panel Admin' : mode === 'forgot' ? 'Kirim tautan reset' : (register ? 'Buat Akun' : 'Masuk')}</button>
-      </form>
-      ${!adminMode && !register && mode === 'login' && state.googleEnabled ? `<div class=\"auth-divider\">atau masuk dengan</div><button class=\"google-button\" type=\"button\" data-action=\"google-login\"><span class=\"google-g\">G</span> Lanjutkan dengan Google</button>` : ''}
-      <div class=\"auth-switch\">${adminMode ? `Bukan administrator? <a class=\"text-link\" href=\"/\">Login pengguna</a>` : mode === 'forgot' ? `<button class=\"text-link\" data-action=\"show-login\">Kembali ke login</button>` : register ? `Sudah punya akun? <button class=\"text-link\" data-action=\"show-login\">Masuk</button>` : `Belum punya akun? <button class=\"text-link\" data-action=\"show-register\">Daftar</button>`}</div>
-      ${!adminMode && !register && mode === 'login' ? '<div class=\"auth-switch\" style=\"margin-top:12px\"><button class=\"text-link\" data-action=\"show-forgot\">Lupa password?</button></div>' : ''}
-      ${!adminMode ? '<div class=\"auth-switch\" style=\"margin-top:12px\"><a class=\"text-link\" href=\"/admin/login\">Login administrator</a></div>' : ''}
-      ${adminMode ? '<p class=\"muted\" style=\"font-size:10px;line-height:1.6;margin-top:22px\">Login admin dibatasi berdasarkan alamat jaringan server. Akses dari IP publik memerlukan allowlist di konfigurasi server.</p>' : ''}
-    </div></section>
-  </div>`;
+  const fields = (register
+    ? '<div class="field"><label for="auth-name">Nama</label><input id="auth-name" name="name" autocomplete="name" placeholder="Nama Anda" required maxlength="100"></div>'
+    : '') +
+    '<div class="field"><label for="auth-email">Email</label><input id="auth-email" name="email" type="email" autocomplete="username" placeholder="nama@email.com" required></div>' +
+    (mode === 'forgot' ? '' : '<div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" autocomplete="' + (register ? 'new-password' : 'current-password') + '" placeholder="' + (register ? 'Minimal 12 karakter' : 'Masukkan password') + '" required minlength="' + (register ? '12' : '1') + '"></div>');
+  return '<div class="auth-page">' +
+    '<section class="auth-art">' +
+      '<div class="auth-brand"><span class="brand-mark">▤</span><span>FeeKu</span></div>' +
+      '<div class="auth-art-content"><h1>Keuangan tercatat.<br>Usaha lebih terarah.</h1><p>Semua transaksi, keuntungan, stok, dan laporan tersusun di satu tempat. Tetap sederhana seperti aplikasi aslinya, kini dapat diakses dari berbagai perangkat.</p>' +
+        '<div class="auth-feature-list"><div class="auth-feature"><span class="auth-check">✓</span>Catat uang masuk dan keluar</div><div class="auth-feature"><span class="auth-check">✓</span>Pantau keuntungan dan stok barang</div><div class="auth-feature"><span class="auth-check">✓</span>Unduh backup dan laporan PDF</div></div>' +
+      '</div>' +
+      '<div class="auth-art-footer">FeeKu · Versi Website</div>' +
+    '</section>' +
+    '<section class="auth-panel"><div class="auth-form-wrap">' +
+      '<div class="auth-heading"><h2>' + title + '</h2><p>' + subtitle + '</p></div>' +
+      (notice ? '<div class="notice" role="status">' + escapeHtml(notice) + '</div>' : '') +
+      '<form class="auth-form" id="auth-form" data-register="' + register + '" data-mode="' + mode + '">' +
+        fields +
+        '<div id="auth-error" class="muted" style="font-size:11px;min-height:16px" role="alert"></div>' +
+        '<button class="button button-primary" type="submit">' + (mode === 'forgot' ? 'Kirim tautan reset' : (register ? 'Buat Akun' : 'Masuk')) + '</button>' +
+      '</form>' +
+      (!register && mode === 'login' && state.googleEnabled && state.supabase
+        ? '<div class="auth-divider">atau masuk dengan</div><button class="google-button" type="button" data-action="google-login"><span class="google-g">G</span> Lanjutkan dengan Google</button>'
+        : '') +
+      '<div class="auth-switch">' + (mode === 'forgot'
+        ? '<button class="text-link" data-action="show-login">Kembali ke login</button>'
+        : register
+          ? 'Sudah punya akun? <button class="text-link" data-action="show-login">Masuk</button>'
+          : 'Belum punya akun? <button class="text-link" data-action="show-register">Daftar</button>') + '</div>' +
+      (!register && mode === 'login'
+        ? '<div class="auth-switch" style="margin-top:12px"><button class="text-link" data-action="show-forgot">Lupa password?</button></div>'
+        : '') +
+    '</div></section>' +
+  '</div>';
+}
+async function showAuth(_adminMode = false, register = false, mode = (register ? 'register' : 'login'), notice = '') {
+  state.user = null;
+  state.isAdmin = false;
+  appRoot.innerHTML = authMarkup(false, register, mode, notice);
+  if (new URLSearchParams(location.search).has('google')) {
+    const value = new URLSearchParams(location.search).get('google');
+    const box = document.getElementById('auth-error');
+    if (box) box.textContent = value === 'failed' ? 'Login Google gagal. Pastikan akun dan konfigurasi OAuth benar.' : 'Login Google belum dikonfigurasi oleh pengelola.';
+  }
 }
 function tokenPageMarkup(kind) {
   const verify = kind === 'verify';
@@ -560,7 +560,6 @@ document.addEventListener('submit', async event => {
     if (form.id === 'auth-form') {
       event.preventDefault();
       const fd = new FormData(form);
-      const adminMode = form.dataset.admin === 'true';
       const register = form.dataset.register === 'true';
       const mode = form.dataset.mode || (register ? 'register' : 'login');
       const email = String(fd.get('email') || '').trim().toLowerCase();
@@ -570,6 +569,7 @@ document.addEventListener('submit', async event => {
       const errorBox = document.getElementById('auth-error');
       submit.disabled = true;
       submit.textContent = 'Memproses…';
+      let loginAttempted = false;
       if (errorBox) errorBox.textContent = '';
 
       try {
@@ -609,18 +609,11 @@ document.addEventListener('submit', async event => {
 
         const { error } = await state.supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
+        loginAttempted = true;
         const result = await api('/api/auth/me');
         if (!result.user) {
           await state.supabase.auth.signOut();
           throw new Error('Sesi login belum dapat diverifikasi oleh server.');
-        }
-        if (adminMode && result.user.role !== 'admin') {
-          await state.supabase.auth.signOut();
-          throw new Error('Akun ini tidak memiliki hak administrator.');
-        }
-        if (!adminMode && result.user.role === 'admin') {
-          await state.supabase.auth.signOut();
-          throw new Error('Akun administrator harus masuk melalui halaman Login Administrator.');
         }
         state.user = result.user;
         state.isAdmin = result.user.role === 'admin';
@@ -628,12 +621,12 @@ document.addEventListener('submit', async event => {
         history.replaceState({}, '', state.isAdmin ? '/admin' : '/');
         await renderPage();
       } catch (err) {
-        if (adminMode && state.supabase) {
+        if (loginAttempted && state.supabase) {
           await state.supabase.auth.signOut().catch(() => {});
         }
         if (errorBox) errorBox.textContent = err.message;
         submit.disabled = false;
-        submit.textContent = adminMode ? 'Masuk ke Panel Admin' : mode === 'forgot' ? 'Kirim tautan reset' : register ? 'Buat Akun' : 'Masuk';
+        submit.textContent = mode === 'forgot' ? 'Kirim tautan reset' : register ? 'Buat Akun' : 'Masuk';
       }
       return;
     }
@@ -731,8 +724,8 @@ document.addEventListener('change', async event => {
 async function init() {
   const adminPath = location.pathname.startsWith('/admin');
   try {
-    await initSupabase();
     await getCsrf();
+    await initSupabase();
     const { data: { session } } = await state.supabase.auth.getSession();
 
     if (location.pathname === '/auth/reset-password' || location.pathname === '/reset-password') {
@@ -757,23 +750,21 @@ async function init() {
     }
 
     const result = await api('/api/auth/me');
-    if (!result.user) return showAuth(adminPath, false);
+    if (!result.user) return showAuth(false, false);
     if (result.user.role === 'admin') {
-      if (!adminNetworkAllowedInClient()) return showAuth(true, false);
       state.user = result.user; state.isAdmin = true; state.page = 'overview';
       if (!adminPath) history.replaceState({}, '', '/admin');
     } else {
-      if (adminPath) return showAuth(true, false);
       state.user = result.user; state.isAdmin = false; state.page = 'dashboard';
+      if (adminPath) history.replaceState({}, '', '/');
     }
     state.googleEnabled = Boolean(result.googleEnabled);
     await renderPage();
   } catch (err) {
-    showAuth(adminPath, false);
+    showAuth(false, false);
     const errorBox = document.getElementById('auth-error');
     if (errorBox) errorBox.textContent = err.message;
   }
 }
-function adminNetworkAllowedInClient() { return true; } // Otorisasi jaringan sesungguhnya selalu diperiksa ulang oleh server.
-window.addEventListener('popstate', () => { if (state.user) { state.page=state.isAdmin?'overview':'dashboard'; renderPage(); } else showAuth(location.pathname.startsWith('/admin')); });
+window.addEventListener('popstate', () => { if (state.user) { state.page=state.isAdmin?'overview':'dashboard'; renderPage(); } else showAuth(false); });
 init();
