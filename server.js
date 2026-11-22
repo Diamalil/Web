@@ -970,7 +970,12 @@ function registerLedgerRoutes(route, table, label) {
         return res.status(409).json({ error: 'Keuntungan otomatis mengikuti transaksi penjualan. Edit transaksi penjualannya dari Buku Kas.' });
       }
       const item = validateRecord(req.body);
-      const updated = await restFetch('profits', {
+      const updated = await restFetch(buildRestPath('profits', {
+        user_id: 'eq.' + req.user.id,
+        legacy_id: 'eq.' + id,
+        source: 'eq.manual',
+        source_transaction_id: 'is.null'
+      }), {
         method: 'PATCH',
         token: req.accessToken,
         prefer: 'return=representation',
