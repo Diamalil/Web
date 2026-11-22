@@ -89,25 +89,9 @@ Buka:
 - Admin: `http://localhost:3000/admin/login`
 - Health check: `http://localhost:3000/healthz`
 
-## 5. Membuat akun admin
+## 5. Membuat akun administrator
 
-Admin pertama dibuat secara eksplisit dari terminal server. Tidak ada kredensial admin bawaan di source code.
-
-Linux/macOS:
-
-```bash
-ADMIN_BOOTSTRAP_PASSWORD='password-kuat-minimal-12-karakter' npm run create-admin -- admin@domain.com
-```
-
-Windows PowerShell:
-
-```powershell
-$env:ADMIN_BOOTSTRAP_PASSWORD = 'password-kuat-minimal-12-karakter'
-npm run create-admin -- admin@domain.com
-Remove-Item Env:ADMIN_BOOTSTRAP_PASSWORD
-```
-
-Gunakan password unik dan jangan menyimpannya di repo. Script akan membuat akun admin baru atau mengubah akun dengan email tersebut menjadi admin. Jalankan sekali untuk bootstrap awal.
+**Panduan terbaru:** administrator dibuat melalui Supabase Auth, bukan akun lokal SQLite. Buat akun pengguna biasa terlebih dahulu, verifikasi email, lalu jalankan `npm run create-admin -- admin@domain.com` menggunakan `SUPABASE_SECRET_KEY` di environment server. Lihat bagian **Supabase Auth Integration (current)** di bagian bawah dokumen ini untuk detail provisioning dan pencabutan akses.
 
 ## 6. Kebijakan jaringan login admin
 
@@ -126,31 +110,10 @@ ADMIN_ALLOWED_CIDRS=127.0.0.1/8,::1/128,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,
 
 Untuk akses melalui reverse proxy, set `TRUST_PROXY=1` hanya bila tepat satu proxy tepercaya berada di depan aplikasi. Jangan mempercayai header IP dari proxy yang tidak Anda kendalikan. Gunakan HTTPS di server publik.
 
-## 7. Login Google/Gmail
+## 7. Login Google
 
-Google login belum aktif sampai OAuth Client ID dan Client Secret dibuat di Google Cloud Console. Konfigurasikan OAuth consent screen, lalu buat OAuth 2.0 Client ID bertipe Web Application.
+Google sign-in sekarang menggunakan Supabase Auth. Jangan gunakan `/auth/google/callback` milik Passport lama. Ikuti langkah pada bagian **Google sign-in activation** di bagian bawah dokumen ini, termasuk callback Supabase `https://dvtnxezautjkeshsbdyk.supabase.co/auth/v1/callback`.
 
-Tambahkan URL callback berikut sebagai **Authorized redirect URI**:
-
-```text
-https://DOMAIN-ANDA/auth/google/callback
-```
-
-Untuk lokal:
-
-```text
-http://localhost:3000/auth/google/callback
-```
-
-Isi `.env`:
-
-```env
-APP_BASE_URL=https://DOMAIN-ANDA
-GOOGLE_CLIENT_ID=isi-client-id
-GOOGLE_CLIENT_SECRET=isi-client-secret
-```
-
-Restart server setelah mengubah `.env`. Google login hanya membuat akun role `user`; akun admin tidak dapat masuk lewat Google.
 
 ## 8. Deployment internet
 
