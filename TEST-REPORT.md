@@ -2,49 +2,83 @@
 
 Pembaruan: 22 November 2026
 
-## Pemeriksaan statis integrasi Supabase Auth
+## 1. Pemeriksaan statis source code
 
-Berkas berikut sudah diperiksa ulang dengan pemeriksaan parser JavaScript:
+Pemeriksaan parser/format berkas sebelumnya lulus untuk:
 
-- `server.js` — lulus.
-- `public/app.js` — lulus.
-- `scripts/create-admin.js` — lulus.
-- `scripts/import-legacy-sqlite.js` — lulus.
-- `scripts/backup-database.js` — lulus.
-- `package.json` — JSON valid.
+- `server.js`
+- `public/app.js`
+- `scripts/create-admin.js`
+- `scripts/import-legacy-sqlite.js`
+- `scripts/backup-database.js`
+- `package.json` (JSON valid)
 
 Pemeriksaan source memastikan:
 
 - Registrasi memakai `supabase.auth.signUp()`.
-- Login memakai `supabase.auth.signInWithPassword()`.
+- Login email/password memakai `supabase.auth.signInWithPassword()`.
 - Google sign-in memakai `supabase.auth.signInWithOAuth({ provider: 'google' })`.
 - Pemulihan password memakai `resetPasswordForEmail()` dan `updateUser()`.
 - Request API menyertakan Bearer access token Supabase.
-- Express memvalidasi access token melalui endpoint Supabase Auth sebelum menjalankan endpoint data.
-- Server hanya membaca role admin dari `app_metadata.role`, tidak dari `user_metadata`.
-- Script provisioning admin mewajibkan Supabase Secret Key, memakai RPC terbatas, dan mendukung pencabutan role.
-- Passport Google dan endpoint login/register lokal lama sudah dihapus dari jalur autentikasi aktif.
+- Express memvalidasi access token melalui Supabase Auth sebelum menjalankan endpoint data.
+- Server hanya membaca role admin dari `app_metadata.role`, bukan `user_metadata`.
+- Script provisioning admin mewajibkan Supabase Secret Key dan menyediakan perintah grant/revoke.
+- Passport Google dan endpoint autentikasi lokal lama sudah dihapus dari jalur autentikasi aktif.
 
-## Pemeriksaan schema Supabase
+## 2. Pemeriksaan schema dan keamanan Supabase
 
-- Migration `20261122000904_add_feeku_auth_profile_and_admin_provisioning` tercatat pada project FeeKu.
-- Trigger `on_auth_user_created` terpasang pada `auth.users` dan membuat baris `public.profiles`.
-- RPC provisioning admin hanya dapat dieksekusi oleh `service_role`; akses `anon` dan `authenticated` ditolak.
-- Tabel `private.user_roles` tidak dapat dibaca/ditulis melalui privilege pengguna `authenticated`.
-- Belum ada akun Auth, profil, ataupun role admin yang dibuat selama implementasi.
+Project FeeKu berstatus `ACTIVE_HEALTHY`. Tiga migration tercatat dan diterapkan:
 
-## Batasan yang belum diuji end-to-end
+- `20261121154555_initial_feeku_core_schema`
+- `20261121154714_refine_feeku_constraints_and_indexes`
+- `20261122000904_add_feeku_auth_profile_and_admin_provisioning`
 
-HTTP/browser end-to-end belum dapat dinyatakan lulus di lingkungan pemeriksaan ini. Belum ada akun email terverifikasi, SMTP project belum diuji, Google OAuth Client ID/Secret belum diberikan atau disimpan di Supabase Dashboard, dan aplikasi belum dijalankan dengan environment lokal/production pemilik proyek.
+Hasil audit database 22 November 2026:
 
-Pengujian penerimaan yang masih diperlukan:
+- `auth.users`: 1 akun.
+- `public.profiles`: 1 profil dengan UUID yang cocok dengan akun Auth.
+- Akun tersebut sudah terverifikasi dan menggunakan provider Google.
+- `private.user_roles`: 0 baris; belum ada administrator yang diprovisikan.
+- Trigger `on_auth_user_created` tersedia untuk membuat profil setelah akun Auth dibuat.
+- Tabel bisnis pada schema `public` memiliki RLS dan kebijakan akses berbasis `auth.uid()`.
+- Schema `private` tidak dapat digunakan oleh role `authenticated`; role tersebut juga tidak dapat membaca atau menulis `private.user_roles`.
+- RPC provisioning admin ditolak untuk `anon` dan `authenticated`, serta hanya dapat dieksekusi oleh `service_role`.
 
-1. Isi `.env` dengan Supabase URL, Publishable Key, Secret Key (server saja), dan `SESSION_SECRET`.
-2. Atur Supabase Auth Site URL dan Redirect URLs untuk localhost serta domain production.
-3. Konfigurasikan SMTP Supabase, lalu uji registrasi, verifikasi email, login, reset password, dan logout.
-4. Buat Google OAuth Web Client, masukkan Client ID/Secret ke Supabase Auth → Sign In / Providers → Google, lalu aktifkan `ENABLE_GOOGLE_OAUTH=true` pada server.
-5. Buat akun pengguna biasa, verifikasi email, lalu uji `npm run create-admin -- admin@domain.com` dan `npm run revoke-admin -- admin@domain.com`.
-6. Uji bahwa pengguna biasa ditolak dari halaman dan endpoint admin.
-7. Jalankan seluruh alur di staging sebelum deployment production.
+Security Advisor masih menampilkan satu peringatan konfigurasi: **Leaked Password Protection Disabled**. Aktifkan perlindungan ini pada pengaturan Auth sebelum production. Tiga notifikasi RLS tanpa policy pada tabel internal schema `private` memang disengaja karena tabel tersebut tidak boleh diakses langsung dari client. Notifikasi unused index bersifat informasional pada database yang masih hampir kosong. Health Advisor tidak melaporkan temuan.
 
-**Catatan penyimpanan data:** Supabase Auth kini menjadi sumber identitas, tetapi endpoint transaksi, keuntungan, stok, dan laporan masih membaca SQLite. Integrasi ini belum memigrasikan data operasional SQLite ke tabel PostgreSQL FeeKu.
+## 3. Uji Google OAuth
+
+**Status: LULUS untuk login Google.**
+
+Pemilik project telah mencoba login Google melalui aplikasi dan mengonfirmasi prosesnya berhasil setelah Client ID/Client Secret Google diperbaiki di Supabase Dashboard.
+
+Log Supabase Auth dan audit database menguatkan hasil tersebut: event login dengan provider Google tercatat, satu akun Auth terverifikasi ditemukan, dan trigger membuat satu profil dengan UUID yang sama. Tidak ada Google Client Secret yang disimpan di repository.
+
+## 4. Uji email/password, verifikasi email, dan reset password
+
+**Status: BELUM DIUJI.**
+
+Custom SMTP masih dinonaktifkan karena project belum memiliki domain pengirim yang terverifikasi. Supabase built-in email service dapat dipakai untuk pengujian terbatas, tetapi hanya mengirim ke alamat yang menjadi anggota organisasi/project dan memiliki batas pengiriman rendah. Layanan bawaan tersebut bukan konfigurasi email untuk aplikasi publik/production.
+
+Untuk pengujian terbatas, gunakan alamat email pengujian yang memang terdaftar sebagai anggota organisasi Supabase. Untuk menerima pendaftaran dan reset password dari pengguna publik, siapkan domain pengirim dan custom SMTP terlebih dahulu. Jangan menganggap registrasi email/password siap production sebelum alur verifikasi dan reset benar-benar diuji.
+
+## 5. Provisioning dan otorisasi administrator
+
+**Status: IMPLEMENTASI TERSEDIA, UJI PEMBERIAN ROLE BELUM DIJALANKAN.**
+
+Script `npm run create-admin -- alamat-email` dan `npm run revoke-admin -- alamat-email` tersedia. Script memerlukan `SUPABASE_SECRET_KEY` pada environment server dan hanya memprovisikan akun Auth yang sudah ada serta terverifikasi.
+
+Belum ada akun yang diberi role admin. Ini disengaja sampai pemilik project menentukan akun administrator yang berwenang. Jangan menaruh Secret Key di frontend atau repository.
+
+## 6. Pengujian end-to-end yang masih diperlukan
+
+- Uji registrasi email/password, email verification, login, reset password, dan logout setelah email pengujian diizinkan atau custom SMTP tersedia.
+- Uji provisioning dan pencabutan role admin pada akun yang memang ditunjuk.
+- Pastikan akun pengguna biasa ditolak dari halaman dan seluruh endpoint admin.
+- Jalankan pengujian API dan alur bisnis pada server lokal/staging milik pemilik project sebelum deployment.
+
+Google OAuth sudah diuji berhasil. Kelulusan Google OAuth tidak otomatis membuktikan seluruh alur email/password, admin, atau API bisnis telah lulus.
+
+## 7. Batas arsitektur penyimpanan data
+
+Supabase Auth sekarang menjadi sumber identitas. Namun endpoint transaksi, keuntungan, stok, laporan, dan ringkasan admin website masih menggunakan database SQLite di server. Tabel PostgreSQL FeeKu sudah disiapkan, tetapi data operasional SQLite belum dimigrasikan ke PostgreSQL dan endpoint bisnis belum dialihkan ke schema tersebut.
