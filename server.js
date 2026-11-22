@@ -7,16 +7,24 @@ const crypto = require('node:crypto');
 const express = require('express');
 const session = require('express-session');
 const connectSQLite3 = require('connect-sqlite3');
-const bcrypt = require('bcryptjs');
 const Database = require('better-sqlite3');
 const helmet = require('helmet');
-const passport = require('passport');
-const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const { rateLimit } = require('express-rate-limit');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
 const BASE_URL = (process.env.APP_BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+const SUPABASE_URL = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
+const SUPABASE_PUBLISHABLE_KEY = String(process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || '');
+const SUPABASE_ORIGIN = (() => {
+  try {
+    const parsed = new URL(SUPABASE_URL);
+    if (process.env.NODE_ENV === 'production' && parsed.protocol !== 'https:') return '';
+    return parsed.origin;
+  } catch { return ''; }
+})();
+const supabaseReady = Boolean(SUPABASE_ORIGIN && SUPABASE_PUBLISHABLE_KEY);
+const googleReady = supabaseReady && process.env.ENABLE_GOOGLE_OAUTH === 'true';
 const DATA_DIR = path.resolve('./data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const dbFile = path.resolve(process.env.DATABASE_FILE || './data/buku-kas.sqlite');
@@ -32,6 +40,7 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   email TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  supabase_user_id TEXT UNIQUE,
   password_hash TEXT,
   google_id TEXT UNIQUE,
   role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user','admin')),
@@ -119,6 +128,8 @@ function ensureColumn(table, column, definition) {
   if (!columns.some(item => item.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 ensureColumn('users', 'email_verified_at', 'TEXT');
+ensureColumn('users', 'supabase_user_id', 'TEXT');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_supabase_user_id ON users(supabase_user_id) WHERE supabase_user_id IS NOT NULL');
 ensureColumn('users', 'session_version', 'INTEGER NOT NULL DEFAULT 1');
 // Product pricing: unit_cost is the HPP/modal per unit; sale_price is the configured selling price.
 ensureColumn('products', 'unit_cost', 'REAL NOT NULL DEFAULT 0');
@@ -176,10 +187,10 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'"],
+      scriptSrc: ["'self'", 'https://cdn.jsdelivr.net'],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", 'data:'],
-      connectSrc: ["'self'"],
+      connectSrc: ["'self'", ...(SUPABASE_ORIGIN ? [SUPABASE_ORIGIN] : [])],
       fontSrc: ["'self'", 'data:'],
       objectSrc: ["'none'"],
       frameAncestors: ["'none'"],
@@ -207,7 +218,6 @@ app.use(session({
     maxAge: 7 * 24 * 60 * 60 * 1000
   }
 }));
-app.use(passport.initialize());
 app.use(express.static(path.join(__dirname, 'public'), { index: false, maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0 }));
 
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 12, standardHeaders: 'draft-7', legacyHeaders: false, message: { error: 'Terlalu banyak permintaan. Coba lagi beberapa menit.' } });
@@ -225,10 +235,62 @@ function safeUser(row) {
   return row ? { id: row.id, name: row.name, email: row.email, role: row.role, isActive: Boolean(row.is_active), emailVerified: Boolean(row.email_verified_at), createdAt: row.created_at } : null;
 }
 function currentUser(req) {
-  if (!req.session || !req.session.userId) return null;
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId) || null;
-  if (!user || !user.is_active || Number(req.session.sessionVersion) !== Number(user.session_version)) return null;
-  return user;
+  return req.user || null;
+}
+function syncLocalUser(authUser) {
+  const email = String(authUser.email || '').trim().toLowerCase();
+  if (!authUser.id || !/^\S+@\S+\.\S+$/.test(email)) {
+    const error = new Error('Profil Supabase tidak memiliki email yang valid.');
+    error.statusCode = 403;
+    throw error;
+  }
+  const verifiedAt = authUser.email_confirmed_at || authUser.confirmed_at || null;
+  if (!verifiedAt) {
+    const error = new Error('Email belum diverifikasi. Periksa email untuk menyelesaikan aktivasi akun.');
+    error.statusCode = 403;
+    throw error;
+  }
+  const metadata = authUser.user_metadata || {};
+  const name = String(metadata.display_name || metadata.full_name || email.split('@')[0]).trim().slice(0, 100) || 'Pengguna';
+  // Only server-managed app_metadata is trusted for authorization.
+  const role = authUser.app_metadata?.role === 'admin' ? 'admin' : 'user';
+  let local = db.prepare('SELECT * FROM users WHERE supabase_user_id=?').get(authUser.id);
+  if (local) {
+    const conflict = db.prepare('SELECT id FROM users WHERE email=? AND id<>?').get(email, local.id);
+    if (conflict) {
+      const error = new Error('Email ini sudah terhubung ke akun lokal lain. Hubungi administrator untuk penautan akun.');
+      error.statusCode = 409;
+      throw error;
+    }
+    db.prepare("UPDATE users SET name=?,email=?,role=?,email_verified_at=COALESCE(email_verified_at,?),updated_at=datetime('now') WHERE id=?")
+      .run(name, email, role, verifiedAt, local.id);
+  } else {
+    // Link verified legacy data only when the email is verified in both systems.
+    const legacy = db.prepare('SELECT * FROM users WHERE email=?').get(email);
+    if (legacy) {
+      if (!legacy.email_verified_at) {
+        const error = new Error('Email sudah digunakan akun lokal yang belum terverifikasi. Hubungi administrator untuk migrasi akun.');
+        error.statusCode = 409;
+        throw error;
+      }
+      db.prepare("UPDATE users SET supabase_user_id=?,name=?,role=?,email_verified_at=COALESCE(email_verified_at,?),updated_at=datetime('now') WHERE id=?")
+        .run(authUser.id, name, role, verifiedAt, legacy.id);
+    } else {
+      db.prepare("INSERT INTO users (name,email,supabase_user_id,role,email_verified_at) VALUES (?,?,?,?,?)")
+        .run(name, email, authUser.id, role, verifiedAt);
+    }
+  }
+  return db.prepare('SELECT * FROM users WHERE supabase_user_id=?').get(authUser.id);
+}
+async function getSupabaseAuthUser(accessToken) {
+  const response = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    headers: { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(8000)
+  });
+  if (response.status === 401 || response.status === 403) return null;
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.msg || payload.message || 'Supabase Auth request failed.');
+  return payload;
 }
 function recordActivity(req, action, entityType, entityId = null, metadata = {}, actorOverride = null) {
   const actor = actorOverride || currentUser(req);
@@ -338,12 +400,30 @@ function requireCsrf(req, res, next) {
   }
   next();
 }
+function requireIdentity(req, res, next) {
+  if (req.user) return next();
+  if (!supabaseReady) return res.status(503).json({ error: 'Supabase Auth belum dikonfigurasi pada server.' });
+  const match = /^Bearer\s+(\S+)$/i.exec(String(req.get('authorization') || ''));
+  if (!match) return res.status(401).json({ error: 'Silakan login kembali.' });
+  getSupabaseAuthUser(match[1]).then(authUser => {
+    if (!authUser?.id) return res.status(401).json({ error: 'Sesi login tidak valid atau sudah kedaluwarsa.' });
+    let user;
+    try { user = syncLocalUser(authUser); }
+    catch (error) { return res.status(error.statusCode || 409).json({ error: error.message }); }
+    if (!user || !user.is_active) return res.status(403).json({ error: 'Akun dinonaktifkan. Hubungi administrator.' });
+    req.authUser = authUser;
+    req.user = user;
+    return next();
+  }).catch(error => {
+    console.error('[supabase-auth] User verification failed:', error.message);
+    return res.status(503).json({ error: 'Layanan autentikasi sementara tidak tersedia.' });
+  });
+}
 function requireAuth(req, res, next) {
-  const user = currentUser(req);
-  if (!user || !user.is_active) return res.status(401).json({ error: 'Silakan login kembali.' });
-  if (user.role !== 'user') return res.status(403).json({ error: 'Endpoint ini khusus akun pengguna.' });
-  req.user = user;
-  next();
+  requireIdentity(req, res, () => {
+    if (req.user.role !== 'user') return res.status(403).json({ error: 'Endpoint ini khusus akun pengguna.' });
+    return next();
+  });
 }
 
 // Pencocokan CIDR IPv4/IPv6 agar panel admin bisa dibatasi ke LAN dan IP internet tepercaya.
@@ -392,12 +472,11 @@ function adminNetworkAllowed(ip) {
   return allow.some(cidr => cidrMatches(ip, cidr));
 }
 function requireAdmin(req, res, next) {
-  const user = currentUser(req);
-  if (!user || !user.is_active) return res.status(401).json({ error: 'Silakan login kembali.' });
-  if (user.role !== 'admin') return res.status(403).json({ error: 'Akses khusus admin.' });
-  if (!adminNetworkAllowed(req.ip)) return res.status(403).json({ error: 'Panel admin hanya tersedia dari jaringan lokal atau IP internet yang diizinkan.' });
-  req.user = user;
-  next();
+  requireIdentity(req, res, () => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Akses khusus admin.' });
+    if (!adminNetworkAllowed(req.ip)) return res.status(403).json({ error: 'Panel admin hanya tersedia dari jaringan lokal atau IP internet yang diizinkan.' });
+    return next();
+  });
 }
 function validDate(value) { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return false; const d = new Date(`${value}T00:00:00Z`); return !Number.isNaN(d.getTime()) && d.toISOString().slice(0,10) === value; }
 function validateRecord(body) {
@@ -427,175 +506,31 @@ function dbErrorMessage(err) {
   return err?.message || 'Terjadi kesalahan.';
 }
 
-// Google OAuth hanya dipasang jika credential sudah dikonfigurasi.
-const googleReady = process.env.ENABLE_GOOGLE_OAUTH === 'true' && Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
-if (googleReady) {
-  passport.use(new GoogleStrategy({
-    clientID: process.env.GOOGLE_CLIENT_ID,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    callbackURL: `${BASE_URL}/auth/google/callback`
-  }, (accessToken, refreshToken, profile, done) => {
-    try {
-      const email = String(profile.emails?.[0]?.value || '').toLowerCase();
-      const verified = profile._json?.email_verified === true;
-      if (!email || !verified) return done(null, false, { message: 'Email Google belum terverifikasi.' });
-      let user = db.prepare('SELECT * FROM users WHERE google_id = ? OR email = ?').get(profile.id, email);
-      if (user?.role === 'admin') return done(null, false, { message: 'Akun admin tidak dapat masuk melalui Google.' });
-      if (user && !user.google_id) {
-        db.prepare("UPDATE users SET google_id = ?, email_verified_at=COALESCE(email_verified_at,datetime('now')), updated_at = datetime('now') WHERE id = ?").run(profile.id, user.id);
-        user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
-      }
-      if (!user) {
-        const name = String(profile.displayName || email.split('@')[0]).slice(0, 100);
-        const result = db.prepare("INSERT INTO users (name,email,google_id,role,email_verified_at) VALUES (?,?,?,'user',datetime('now'))").run(name, email, profile.id);
-        user = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
-      }
-      if (!user.is_active) return done(null, false, { message: 'Akun dinonaktifkan. Hubungi admin.' });
-      return done(null, user);
-    } catch (err) { return done(err); }
-  }));
-}
-
 // ---------- AUTH ----------
 app.get('/api/auth/csrf', (req, res) => {
   if (!req.session.csrfToken) req.session.csrfToken = crypto.randomBytes(32).toString('hex');
   res.json({ csrfToken: req.session.csrfToken, googleEnabled: googleReady });
 });
+app.get('/api/auth/config', (req, res) => {
+  if (!supabaseReady) return res.status(503).json({ error: 'SUPABASE_URL dan SUPABASE_PUBLISHABLE_KEY wajib diatur di server.' });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ supabaseUrl: SUPABASE_URL, publishableKey: SUPABASE_PUBLISHABLE_KEY, googleEnabled: googleReady });
+});
 app.get('/api/auth/me', (req, res) => {
-  const user = currentUser(req);
-  if (!user || !user.is_active) return res.json({ user: null, googleEnabled: googleReady });
-  if (user.role === 'admin' && !adminNetworkAllowed(req.ip)) return res.status(403).json({ error: 'Jaringan tidak diizinkan untuk panel admin.' });
-  res.json({ user: safeUser(user), googleEnabled: googleReady });
-});
-app.post('/api/auth/register', authLimiter, requireCsrf, async (req, res) => {
-  try {
-    const name = validateName(req.body.name, 'Nama');
-    const email = String(req.body.email || '').trim().toLowerCase();
-    const password = String(req.body.password || '');
-    if (!/^\S+@\S+\.\S+$/.test(email) || email.length > 190) return res.status(400).json({ error: 'Format email tidak valid.' });
-    if (password.length < 12 || password.length > 100) return res.status(400).json({ error: 'Password minimal 12 karakter.' });
-    if (!emailDeliveryReady()) return res.status(503).json({ error: 'Pendaftaran sementara belum tersedia karena layanan email belum dikonfigurasi oleh pengelola.' });
-    if (db.prepare('SELECT id FROM users WHERE email = ?').get(email)) return res.status(409).json({ error: 'Email sudah terdaftar.' });
-    const hash = await bcrypt.hash(password, 12);
-    const result = db.prepare("INSERT INTO users (name,email,password_hash,role) VALUES (?,?,?,'user')").run(name, email, hash);
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
-    try {
-      await sendVerificationEmail(user);
-    } catch (mailError) {
-      console.error('Verification email could not be sent:', mailError.message);
-      recordActivity(req, 'register_email_delivery_failed', 'account', user.id, {}, user);
-      return res.status(503).json({ error: 'Akun tercatat, tetapi email verifikasi belum terkirim. Coba login kembali setelah layanan email siap untuk meminta tautan baru.' });
-    }
-    recordActivity(req, 'register_pending_verification', 'account', user.id, {}, user);
-    res.status(201).json({ message: 'Akun dibuat. Periksa email untuk verifikasi sebelum login.' });
-  } catch (err) { res.status(400).json({ error: dbErrorMessage(err) }); }
-});
-app.post('/api/auth/login', loginLimiter, requireCsrf, async (req, res) => {
-  try {
-    const email = String(req.body.email || '').trim().toLowerCase();
-    const password = String(req.body.password || '');
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
-    if (!user || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) {
-      return res.status(401).json({ error: 'Email atau password salah.' });
-    }
-    if (!user.is_active) return res.status(403).json({ error: 'Akun dinonaktifkan. Hubungi admin.' });
-    if (user.role !== 'user') return res.status(403).json({ error: 'Gunakan halaman login admin.' });
-    if (!user.email_verified_at) {
-      let message = 'Email belum terverifikasi. Coba lagi setelah layanan email tersedia.';
-      if (emailDeliveryReady()) {
-        try { await sendVerificationEmail(user); message = 'Email belum terverifikasi. Tautan verifikasi baru telah dikirim.'; }
-        catch (mailError) { console.error('Verification resend failed:', mailError.message); }
-      }
-      recordActivity(req, 'login_unverified_email', 'account', user.id, {}, user);
-      return res.status(403).json({ error: message, code: 'EMAIL_NOT_VERIFIED' });
-    }
-    const csrfToken = await asyncSessionLogin(req, user);
-    recordActivity(req, 'login', 'account', user.id, {}, user);
-    res.json({ user: safeUser(user), csrfToken });
-  } catch (err) { res.status(500).json({ error: 'Login gagal diproses.' }); }
-});
-app.post('/api/auth/forgot-password', recoveryLimiter, async (req, res) => {
-  const genericMessage = 'Jika email terdaftar dan sudah terverifikasi, tautan pemulihan akan dikirim.';
-  const email = String(req.body.email || '').trim().toLowerCase();
-  if (/^\S+@\S+\.\S+$/.test(email) && emailDeliveryReady()) {
-    const user = db.prepare("SELECT * FROM users WHERE email=? AND role='user' AND is_active=1 AND email_verified_at IS NOT NULL").get(email);
-    if (user) {
-      try {
-        await sendPasswordResetEmail(user);
-        recordActivity(req, 'password_reset_requested', 'account', user.id, {}, user);
-      } catch (mailError) {
-        console.error('Password reset email could not be sent:', mailError.message);
-      }
-    }
+  if (!/^Bearer\s+\S+$/i.test(String(req.get('authorization') || ''))) {
+    return res.json({ user: null, googleEnabled: googleReady });
   }
-  res.json({ message: genericMessage });
-});
-app.post('/api/auth/verify-email', recoveryLimiter, (req, res) => {
-  const row = findValidAuthToken(req.body.token, 'verify_email');
-  if (!row || row.role !== 'user' || !row.is_active) return res.status(400).json({ error: 'Tautan verifikasi tidak valid atau sudah kedaluwarsa. Login kembali untuk meminta tautan baru.' });
-  const complete = db.transaction(() => {
-    db.prepare("UPDATE users SET email_verified_at=COALESCE(email_verified_at,datetime('now')),updated_at=datetime('now') WHERE id=? AND role='user'").run(row.user_id);
-    db.prepare('DELETE FROM auth_tokens WHERE id=?').run(row.id);
-  });
-  complete();
-  recordActivity(req, 'email_verified', 'account', row.user_id, {}, { id: row.user_id, email: row.email });
-  res.json({ ok: true, message: 'Email berhasil diverifikasi. Silakan login.' });
-});
-app.post('/api/auth/reset-password', recoveryLimiter, async (req, res) => {
-  const password = String(req.body.password || '');
-  if (password.length < 12 || password.length > 100) return res.status(400).json({ error: 'Password baru minimal 12 karakter.' });
-  const row = findValidAuthToken(req.body.token, 'reset_password');
-  if (!row || row.role !== 'user' || !row.is_active) return res.status(400).json({ error: 'Tautan reset password tidak valid atau sudah kedaluwarsa.' });
-  try {
-    const hash = await bcrypt.hash(password, 12);
-    const update = db.transaction(() => {
-      db.prepare("UPDATE users SET password_hash=?,session_version=session_version+1,updated_at=datetime('now') WHERE id=? AND role='user'").run(hash, row.user_id);
-      db.prepare('DELETE FROM auth_tokens WHERE user_id=?').run(row.user_id);
-    });
-    update();
-    recordActivity(req, 'password_reset_completed', 'account', row.user_id, {}, { id: row.user_id, email: row.email });
-    res.json({ ok: true, message: 'Password berhasil diperbarui. Silakan login dengan password baru.' });
-  } catch (err) { res.status(500).json({ error: 'Reset password gagal diproses.' }); }
-});
-app.post('/api/auth/admin/login', loginLimiter, requireCsrf, async (req, res) => {
-  try {
-    if (!adminNetworkAllowed(req.ip)) return res.status(403).json({ error: 'Jaringan ini tidak diizinkan untuk login admin.' });
-    const email = String(req.body.email || '').trim().toLowerCase();
-    const password = String(req.body.password || '');
-    const user = db.prepare("SELECT * FROM users WHERE email = ? AND role = 'admin'").get(email);
-    if (!user || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) {
-      recordActivity(req, 'admin_login_failed', 'account', null, { email }, { email });
-      return res.status(401).json({ error: 'Kredensial admin tidak valid.' });
+  requireIdentity(req, res, () => {
+    if (req.user.role === 'admin' && !adminNetworkAllowed(req.ip)) {
+      return res.status(403).json({ error: 'Jaringan tidak diizinkan untuk panel admin.' });
     }
-    if (!user.is_active) return res.status(403).json({ error: 'Akun admin dinonaktifkan.' });
-    const csrfToken = await asyncSessionLogin(req, user);
-    recordActivity(req, 'admin_login', 'account', user.id, {}, user);
-    res.json({ user: safeUser(user), csrfToken });
-  } catch (err) { res.status(500).json({ error: 'Login admin gagal diproses.' }); }
-});
-app.post('/api/auth/logout', requireCsrf, (req, res) => {
-  const user = currentUser(req);
-  if (user) recordActivity(req, 'logout', 'account', user.id, {}, user);
-  req.session.destroy(err => {
-    if (err) return res.status(500).json({ error: 'Gagal mengakhiri sesi.' });
-    res.clearCookie('buku_kas.sid', { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production' });
-    res.json({ ok: true });
+    return res.json({ user: safeUser(req.user), googleEnabled: googleReady });
   });
 });
-
-if (googleReady) {
-  app.get('/auth/google', (req, res, next) => passport.authenticate('google', { scope: ['profile', 'email'], state: true })(req, res, next));
-  app.get('/auth/google/callback', passport.authenticate('google', { failureRedirect: '/?google=failed', session: false }), async (req, res, next) => {
-    try {
-      await asyncSessionLogin(req, req.user);
-      recordActivity(req, 'login_google', 'account', req.user.id, {}, req.user);
-      res.redirect('/');
-    } catch (err) { next(err); }
-  });
-} else {
-  app.get('/auth/google', (req, res) => res.status(503).send('Login Google belum dikonfigurasi. Isi GOOGLE_CLIENT_ID dan GOOGLE_CLIENT_SECRET di file .env.'));
-  app.get('/auth/google/callback', (req, res) => res.redirect('/?google=not-configured'));
-}
+app.post('/api/auth/logout', authLimiter, requireCsrf, requireIdentity, (req, res) => {
+  recordActivity(req, 'logout', 'account', req.user.id);
+  res.json({ ok: true });
+});
 
 // ---------- USER DATA: DASHBOARD ----------
 app.get('/api/dashboard', requireAuth, (req, res) => {
@@ -1029,7 +964,7 @@ app.get('/api/admin/logs', requireAdmin, (req, res) => {
 });
 
 // Frontend shell. /admin/login is an entirely separate credential entry point.
-app.get(['/','/admin','/admin/login','/forgot-password','/verify-email','/reset-password'], (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get(['/','/admin','/admin/login','/forgot-password','/verify-email','/reset-password','/auth/callback','/auth/reset-password'], (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 app.get('/healthz', (req, res) => res.json({ ok: true, service: 'buku-kas-website' }));
 app.use('/api', (req, res) => res.status(404).json({ error: 'Endpoint tidak ditemukan.' }));
 app.use((err, req, res, next) => {
@@ -1044,7 +979,6 @@ if (process.env.NODE_ENV === 'production' && (!process.env.SESSION_SECRET || pro
 }
 app.listen(PORT, HOST, () => {
   console.log(`Buku Kas Website berjalan di ${HOST}:${PORT}`);
-  console.log(`URL konfigurasi OAuth: ${BASE_URL}/auth/google/callback`);
-  console.log(`Google OAuth: ${googleReady ? 'aktif' : 'ditunda/nonaktif'}`);
-  console.log(`Email delivery: ${emailDeliveryReady() ? emailProvider : 'belum dikonfigurasi'}`);
+  console.log(`Supabase Auth: ${supabaseReady ? 'terkonfigurasi' : 'belum dikonfigurasi'}`);
+  console.log(`Google sign-in: ${googleReady ? 'ditampilkan' : 'disembunyikan'}`);
 });
