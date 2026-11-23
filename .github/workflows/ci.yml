@@ -1,0 +1,86 @@
+name: FeeKu CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: feeku-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Report dependency vulnerabilities
+        shell: bash
+        run: |
+          npm audit --json > "$RUNNER_TEMP/feeku-npm-audit.json" || true
+          node - "$RUNNER_TEMP/feeku-npm-audit.json" <<'NODE'
+          const fs = require('node:fs');
+          const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const counts = report.metadata?.vulnerabilities || {};
+          console.log('npm audit summary:', JSON.stringify(counts));
+          for (const [name, item] of Object.entries(report.vulnerabilities || {})) {
+            console.log(`${String(item.severity).toUpperCase()} ${name} | range=${item.range} | direct=${item.isDirect} | fix=${JSON.stringify(item.fixAvailable)}`);
+            for (const advisory of (item.via || []).filter(value => typeof value === 'object')) {
+              console.log(`  - ${advisory.title || advisory.name}: ${advisory.url || 'No advisory URL'}`);
+            }
+          }
+          NODE
+
+      - name: Check JavaScript syntax
+        run: npm run check
+
+      - name: Start FeeKu and run HTTP smoke test
+        shell: bash
+        env:
+          NODE_ENV: development
+          HOST: 127.0.0.1
+          PORT: 3000
+          SUPABASE_URL: https://ci-placeholder.supabase.co
+          SUPABASE_PUBLISHABLE_KEY: ci-placeholder-publishable-key
+          SESSION_SECRET: ci-only-session-secret-at-least-32-characters-long
+          SESSION_DATABASE_FILE: ./data/ci-sessions.sqlite
+          ENABLE_GOOGLE_OAUTH: "false"
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          node server.js > /tmp/feeku-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          ready=0
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/healthz >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            cat /tmp/feeku-server.log
+            echo "FeeKu did not become ready."
+            exit 1
+          fi
+
+          npm run test:local -- http://127.0.0.1:3000

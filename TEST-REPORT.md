@@ -2,111 +2,122 @@
 
 Pembaruan: 23 November 2026
 
-## 1. Status project dan runtime
+## 1. Status project
 
-- Repository utama: `Diamalil/Web`, branch `main`.
-- PR #3 (migrasi endpoint bisnis ke PostgreSQL) sudah merged.
-- PR #5 (login tunggal dan Google OAuth) sudah merged.
-- PR #6 (local HTTP smoke test) sudah merged.
-- Project Supabase `Database FeeKu` berstatus `ACTIVE_HEALTHY`.
-- Node.js minimum yang didukung: 20.11.
-- Server menggunakan `HOST=0.0.0.0`, port default 3000, sehingga dapat dibuka dari komputer yang sama melalui `http://localhost:3000`.
+- Repository: `Diamalil/Web`, branch utama `main`.
+- PR #3 (endpoint bisnis PostgreSQL), PR #5 (login tunggal/Google OAuth), dan PR #6 (HTTP smoke test) sudah merged.
+- Project Supabase `Database FeeKu` berstatus `ACTIVE_HEALTHY`, Postgres 17.12, region `ap-southeast-1`.
+- Runtime yang ditargetkan: Node.js 22.9/24/26, dengan Node.js 26 LTS direkomendasikan.
+- FeeKu masih prototype. Import database bisnis SQLite lama sengaja dilewati sesuai keputusan pemilik project. Tidak ada data SQLite yang diimpor dalam pekerjaan ini.
 
-## 2. Database dan migrasi
+## 2. Data prototype PostgreSQL
 
-Tujuh migration aktif pada project Supabase:
+Jumlah baris aktual diperiksa kembali pada 23 November 2026 setelah pengujian restore yang diakhiri ROLLBACK:
 
-- `20261121154555_initial_feeku_core_schema`
-- `20261121154714_refine_feeku_constraints_and_indexes`
-- `20261122000904_add_feeku_auth_profile_and_admin_provisioning`
-- `20261122012819_migrate_feeku_business_data_to_postgres`
-- `20261122012910_fix_feeku_category_import_conflict_target`
-- `20261122015733_migrate_business_data_and_postgres_api_permissions`
-- `20261122020611_feeku_rls_policy_cleanup`
+| Tabel | Baris |
+|---|---:|
+| categories | 1 |
+| products | 2 |
+| transactions | 1 |
+| transaction_items | 2 |
+| profits | 1 |
+| activity_logs | 99 |
 
-Jumlah akun Auth: 2; profil: 2; role administrator: 1.
+Data tersebut adalah isi PostgreSQL prototype saat pemeriksaan. Asal data tidak disimpulkan dari jumlah ini. Semua baris dipertahankan; tidak ada truncation atau reset.
 
-**Migrasi data bisnis SQLite ke PostgreSQL belum dijalankan.** Pada pemeriksaan 23 November, tabel kategori, produk, transaksi, rincian transaksi, dan keuntungan masih kosong. Tidak ada file SQLite bisnis sumber (`data/buku-kas.sqlite`) yang tersedia di sesi pemeriksaan. Script `npm run migrate:postgres` sudah tersedia di repository, tetapi import nyata harus dijalankan terhadap file SQLite asli dari komputer/server lama. Jangan mengklaim migrasi data selesai sampai file sumber berhasil diimpor dan jumlah, saldo, stok, transaksi, serta margin direkonsiliasi.
+Tujuh migration sebelumnya telah tercatat. Migration keamanan terbaru yang diterapkan adalah `20261123021124_harden_activity_log_client_permissions`.
 
 ## 3. Uji integrasi PostgreSQL dan RLS
 
-**Status: LULUS untuk jalur database yang diuji.**
+**Status: LULUS untuk jalur database yang sudah diuji.**
 
-Seluruh pengujian dijalankan dalam transaksi SQL yang diakhiri `ROLLBACK`.
-
+Pengujian sebelumnya dijalankan menggunakan transaksi SQL yang diakhiri `ROLLBACK`:
 - Kategori dan produk dapat dibuat oleh pemilik.
 - RPC penjualan katalog membuat transaksi dan rincian item.
-- Stok 3 unit berkurang 2 menjadi 1.
-- Omzet 300 dan margin otomatis 100 untuk contoh uji.
+- Stok turun sesuai kuantitas yang dijual.
+- Omzet dan margin otomatis dihitung.
 - Penyesuaian stok +1 dan -1 berhasil.
 - Transaksi manual bertipe Keluar berhasil dibuat.
-- Keuntungan manual berhasil dibuat, diubah, dan dihapus.
-- Baris margin otomatis tidak dapat diubah atau dihapus oleh pengguna melalui kebijakan RLS.
-- Pengguna kedua tidak dapat membaca atau mengubah kategori pengguna pertama.
-- Insert dengan `user_id` milik orang lain ditolak.
+- Keuntungan manual dapat dibuat, diubah, dan dihapus.
+- Margin otomatis tidak dapat diubah/dihapus melalui kebijakan client.
+- Pengguna kedua tidak dapat membaca atau mengubah data pengguna pertama.
+- Insert dengan `user_id` milik akun lain ditolak.
 
-Tidak ada record uji yang ditinggalkan.
+Pengujian tambahan pada review ini:
+- `restore_feeku_user_backup` berhasil dipanggil dengan role `authenticated` pada transaksi uji berisi payload kosong.
+- Transaksi uji diakhiri `ROLLBACK`; hasil query sesudahnya menunjukkan jumlah data prototype tetap 1 kategori, 2 produk, 1 transaksi, 2 item, 1 keuntungan, dan 99 log.
+- Uji invocation kosong tersebut hanya membuktikan permission gate/RPC dapat dijalankan. Ini bukan pengganti pengujian restore penuh menggunakan akun disposable.
 
 ## 4. Audit keamanan
 
-### Lulus
+### Lulus / diperketat
 
-- Semua 13 tabel schema `public` mengaktifkan RLS dan mempunyai kebijakan akses yang tercatat.
-- Semua 4 tabel schema `private` mengaktifkan RLS dan tidak mempunyai akses langsung dari role `authenticated`.
-- Role `anon` dan `authenticated` tidak dapat memakai schema `private` atau membaca `private.user_roles`.
-- RPC provisioning administrator dan import legacy hanya bisa dieksekusi oleh `service_role`.
-- RPC transaksi dan stok menggunakan `SECURITY INVOKER`, dengan kontrol RLS.
-- Tidak ada temuan Health Advisor.
+- RLS aktif pada tabel aplikasi.
+- Policy kepemilikan mengikat data pengguna pada `auth.uid()`.
+- Role client tidak memiliki akses langsung ke schema `private`.
+- RPC transaksi dan stok memakai `SECURITY INVOKER`.
+- RPC provisioning admin dan import legacy dibatasi untuk `service_role`.
+- Server memvalidasi access token melalui Supabase Auth, memeriksa verifikasi email dan status akun, dan mengambil role dari `app_metadata.role`.
+- Express menggunakan Helmet/CSP, menonaktifkan `X-Powered-By`, mengatur Referrer-Policy dan Cache-Control, memakai CSRF token, rate limit, dan cookie session `HttpOnly`/ `SameSite=Lax`/ `Secure` saat production.
+- Admin routes membutuhkan role admin dan IP/CIDR allowlist.
+- Hak tulis client pada `public.activity_logs` dicabut melalui migration baru. Setelah migration, privilege authenticated: SELECT=true, INSERT=false, UPDATE=false, DELETE=false. Privilege INSERT untuk service_role tetap true.
+- Policy `activity_logs_insert_own` dihapus; `activity_logs_select_own` tetap ada.
+- Jumlah activity_logs tetap 99 setelah perubahan privilege.
 
-### Temuan dan tindakan lanjutan
+### Temuan yang masih terbuka
 
-1. **Leaked Password Protection nonaktif.** Aktifkan pada Supabase Auth jika tersedia pada paket project.
-2. **`restore_feeku_user_backup` adalah SECURITY DEFINER yang dapat dipanggil authenticated.** Definisi fungsi memeriksa `auth.uid()`, mensyaratkan role authenticated, dan menentukan target dari UUID session itu sendiri. Tidak ada argumen target user yang dikirim client. Desain ini membatasi restore ke akun pemanggil, tetapi peringatan Advisor tetap harus ditinjau dan dites sebelum production.
-3. **24 unused-index notices** masih muncul. Ini bersifat informasional pada database bisnis yang kosong/belum banyak dipakai; jangan menghapus index sebelum workload nyata tersedia.
-4. Empat tabel internal pada schema `private` tidak mempunyai policy RLS langsung. Ini disengaja karena akses langsung tidak diberikan ke role client; operasi yang diperlukan hanya melalui prosedur tepercaya.
+1. **Leaked Password Protection nonaktif.** Perlu diaktifkan di Supabase Auth bila tersedia pada plan project. Dokumentasi Supabase menyatakan fitur ini tersedia pada Pro Plan ke atas: https://supabase.com/docs/guides/auth/password-security
+2. **Security Advisor memperingatkan `restore_feeku_user_backup(p_data jsonb)` yang SECURITY DEFINER dan dapat dipanggil authenticated.** Wrapper mengecek `auth.uid()`, role authenticated, memakai empty search_path, serta selalu memanggil helper private dengan UID session sendiri. Helper private tidak dapat dieksekusi oleh role client. Ini desain per-user restore yang disengaja, tetapi masih membutuhkan security review dan pengujian adversarial sebelum rilis publik.
+3. Empat tabel schema `private` tanpa policy RLS langsung menghasilkan temuan INFO. Akses client langsung tetap tidak diberikan; grants harus diperiksa setiap ada migration baru.
+4. Performance Advisor berisi pemberitahuan unused index yang bersifat informasional untuk prototype dengan data sedikit. Jangan menghapus index tanpa pengukuran workload.
 
-## 5. Audit autentikasi dan Google OAuth
+Security Advisor setelah migration:
+- INFO: 4 private tables dengan RLS tanpa policy langsung.
+- WARN: restore SECURITY DEFINER callable by authenticated.
+- WARN: leaked password protection disabled.
+Health Advisor: tidak ada temuan.
 
-- Satu akun admin aktif dan terverifikasi.
-- Satu akun pengguna Google terverifikasi saat ini dalam status banned/nonaktif.
-- Audit log mencatat perubahan status akun pengguna menjadi nonaktif melalui aksi administrator pada 22 November 2026.
-- Log Supabase Auth pada 23 November 2026 sekitar 08:47 WIB menunjukkan callback Google dari `http://localhost:3000` mencapai Supabase tetapi ditolak dengan `403 User is banned`.
+### Audit dependency npm
 
-Ini bukan kegagalan konfigurasi Google OAuth. Untuk menggunakan kembali akun Google tersebut, administrator perlu mengaktifkan status akun melalui panel admin. Status ban tidak diubah otomatis selama audit.
+GitHub Actions run #2, Node.js 26:
+- `npm ci` selesai.
+- `npm audit` melaporkan 7 vulnerability: 2 low, 4 high, 1 critical.
+- Paket transitif yang ditandai: `@tootallnate/once`, `cacache`, `http-proxy-agent`, `make-fetch-happen`, `node-gyp`, `sqlite3`, dan `tar`.
+- Semua temuan tersebut tercatat `direct=false` dan `fixAvailable=true` pada laporan audit saat CI berjalan.
+- Critical advisory pada `tar` berkaitan dengan path traversal/overwrite saat ekstraksi arsip.
+- Belum dilakukan pembaruan lockfile karena jalur dependency perlu ditinjau agar perbaikan tidak merusak native SQLite/session packages. **Temuan high/critical ini wajib diselesaikan sebelum production.** Jangan menggunakan `npm audit fix --force` tanpa review.
 
-## 6. Local smoke test
 
-PR #6 menambahkan `npm run test:local` dan sudah merged ke `main`.
+## 5. Auth dan Google OAuth
 
-Smoke test memeriksa:
-- HTML shell website, `app.js`, dan `styles.css`.
-- `/healthz` dan konfigurasi PostgreSQL.
-- Konfigurasi Supabase Auth serta flag Google OAuth.
-- CSRF bootstrap.
-- Endpoint identitas tanpa session.
-- Penolakan request tanpa login ke endpoint dashboard dan admin.
-- Redirect rute lama `/admin/login` ke halaman login tunggal.
+- Konfigurasi login memakai satu halaman.
+- Log sebelumnya menunjukkan callback Google dari localhost mencapai Supabase, tetapi akun uji yang dinonaktifkan oleh administrator ditolak dengan `403 User is banned`.
+- Status akun itu tidak diubah otomatis dalam pekerjaan ini. Jika akun uji akan dipakai lagi, aktifkan secara sadar dari panel admin.
+- Custom SMTP dan domain pengirim belum disiapkan. Supabase default SMTP bukan untuk produksi; dokumentasi menyebut pembatasan penerima, laju kirim, dan tidak ada SLA: https://supabase.com/docs/guides/auth/auth-smtp
 
-Syntax script smoke test lulus. Namun smoke test belum dijalankan terhadap proses server di komputer pengguna karena proses lokal komputer tersebut tidak dapat diakses dari lingkungan pemeriksaan ini. Log autentikasi membuktikan browser lokal sudah mencapai endpoint Supabase, tetapi tidak membuktikan seluruh halaman dan endpoint telah lulus smoke test.
+## 6. Local HTTP smoke test dan browser E2E
 
-Jalankan secara lokal:
-```bash
-npm install
-npm run check
-npm start
-```
-Pada terminal kedua:
-```bash
-npm run test:local
-```
-Buka `http://localhost:3000`.
+PR #6 menambahkan `npm run test:local`. Test memeriksa HTML shell, JS/CSS, health check, Supabase Auth config, CSRF bootstrap, identitas unauthenticated, proteksi dashboard/admin, dan redirect route admin lama.
 
-## 7. Blocker sebelum cutover production
+- Syntax script smoke test sebelumnya lulus.
+- HTTP smoke test belum dijalankan pada server lokal milik pengguna.
+- Tidak ada server FeeKu lokal yang dapat diakses dari environment review dan tidak ada URL staging/production yang diberikan.
+- Browser E2E belum dijalankan. `npm run test:local` adalah HTTP smoke test, bukan browser automation.
+- Matriks browser manual telah disiapkan pada `BROWSER-E2E.md`.
+- Workflow CI di PR #7 sukses pada run #2 dengan Node.js 26: `npm ci`, dependency audit report, syntax check, dan HTTP smoke test. Smoke test menunjukkan 10 pass, 0 fail, 2 warning. Dua warning berasal dari CI yang sengaja tidak mengisi SUPABASE_SECRET_KEY dan menonaktifkan Google OAuth.
 
-- Sediakan database SQLite bisnis lama dan jalankan `npm run migrate:postgres`.
-- Rekonsiliasi data hasil import.
-- Jalankan smoke test lokal dan pengujian browser end-to-end.
-- Aktifkan kembali akun Google yang memang harus digunakan (jika penonaktifan sebelumnya tidak disengaja).
-- Tinjau dua temuan Security Advisor sebelum production.
-- Siapkan SMTP/domain terverifikasi untuk registrasi email publik.
-- Lakukan pengujian staging sebelum menghapus atau menghentikan SQLite lama.
+## 7. Production readiness
+
+**Belum siap untuk production.** Sebagai prototype, pengujian schema/RLS dan pengetatan audit log sudah berjalan, tetapi gate berikut masih terbuka:
+- Jalankan local HTTP smoke test dan browser E2E memakai akun pengujian khusus.
+- Enable leaked password protection jika didukung project plan.
+- Review dan dokumentasikan penerimaan risiko restore SECURITY DEFINER atau rancang ulang batas helper.
+- Siapkan custom SMTP, domain pengirim, SPF/DKIM/DMARC, dan uji email.
+- Konfigurasi production domain HTTPS, Auth Site URL dan Redirect URLs, serta Google OAuth production callback.
+- Set semua secrets di secret manager hosting, bukan repository.
+- Pastikan persistent session storage atau gunakan shared durable store bila deployment multi-instance/ephemeral.
+- Tinjau rate limiter untuk deployment multi-instance.
+- Siapkan backup PostgreSQL dan lakukan simulasi restore terkontrol pada environment staging.
+- Jalankan dependency audit dan review ulang Supabase Advisors sebelum launch.
+
+Rincian lengkap ada pada `PRODUCTION-READINESS.md`.
