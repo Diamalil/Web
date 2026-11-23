@@ -9,7 +9,7 @@ class SupabaseSessionStore extends session.Store {
   constructor(options = {}) {
     super();
 
-    this.url = String(options.url || '').replace(/\\/+$/, '');
+    this.url = String(options.url || '').replace(/\/+$/, '');
     this.apiKey = String(options.apiKey || '');
     this.fetch = options.fetch || globalThis.fetch;
     this.timeoutMs = Number(options.timeoutMs) || 8000;
