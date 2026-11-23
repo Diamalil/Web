@@ -33,8 +33,11 @@ jobs:
       - name: Enforce dependency security audit
         run: npm audit --audit-level=low
 
-      - name: Test SQLite session store
+      - name: Test local and Supabase session stores
         run: npm run test:session-store
+
+      - name: Test Vercel serverless bootstrap and CSRF persistence
+        run: npm run test:vercel
 
       - name: Check JavaScript syntax
         run: npm run check
