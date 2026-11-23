@@ -47,7 +47,7 @@ Supabase:
   └── public.feeku_server_sessions (session store persisten khusus Vercel)
 ```
 
-Semua operasi bisnis pengguna memakai token Supabase milik pengguna dan dibatasi oleh RLS. Server menggunakan `SUPABASE_SECRET_KEY` hanya untuk fungsi server tepercaya seperti log lintas akun, operasi admin, dan migrasi satu kali. Secret key tidak boleh dikirim ke browser atau disimpan di repository.
+Semua operasi bisnis pengguna memakai token Supabase milik pengguna dan dibatasi oleh RLS. `SUPABASE_SECRET_KEY` hanya digunakan di server untuk session/CSRF persisten saat deployment Vercel dan fungsi tepercaya seperti log lintas akun, operasi admin, serta migrasi satu kali. Secret key tidak boleh dikirim ke browser atau disimpan di repository.
 
 ## Prasyarat dan instalasi
 
