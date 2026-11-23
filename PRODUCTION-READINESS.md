@@ -34,7 +34,7 @@ These counts describe the current project state only. They are not evidence that
 - Write APIs are rate limited and require a CSRF token.
 - The `feeku.sid` cookie is `HttpOnly`, `SameSite=Lax`, and marked `Secure` in production.
 - Admin routes are protected by role checks and an IP/CIDR allowlist.
-- Client write permissions on `public.activity_logs` have been revoked. Standard users retain SELECT access to their own audit records; server-side `service_role` writes remain available. Verification confirmed INSERT/UPDATE/DELETE are false for `authenticated`, SELECT is true, and the existing 99 audit rows remain.
+- Client write permissions on `public.activity_logs` have been revoked. Standard users retain SELECT access to their own audit records; server-side `service_role` writes remain available. Verification confirmed INSERT/UPDATE/DELETE are false for `authenticated`, SELECT is true, and the current audit-log table data remains (170 rows observed in the latest snapshot).
 - The account restore endpoint now calls a service-role-only RPC after Express has validated the Supabase user session. The target user ID is taken from the verified server-side request identity, never from the submitted backup payload.
 - The previous `public.restore_feeku_user_backup(jsonb)` function was removed. The replacement `public.restore_feeku_user_backup(uuid,jsonb)` is `SECURITY DEFINER`, has an empty `search_path`, checks the JWT role is `service_role`, and grants `EXECUTE` only to `service_role`. SQL privilege verification confirmed `anon=false`, `authenticated=false`, and `service_role=true`.
 
