@@ -1,6 +1,6 @@
 # FeeKu Browser E2E Test Plan
 
-Status: test cases documented; browser execution is pending on the developer's local machine.
+Status: browser E2E dinyatakan selesai oleh pemilik project pada 23 November 2026. Checklist di bawah ini ditandai selesai berdasarkan konfirmasi tersebut; CI serverless di PR #9 merupakan pengujian terpisah.
 
 This plan complements `npm run test:local`. The local smoke test checks HTTP endpoints and response codes; it is not a browser-driven end-to-end test.
 
@@ -56,12 +56,12 @@ This plan complements `npm run test:local`. The local smoke test checks HTTP end
 
 ## Local execution
 
-From the repository directory, use the readiness branch while the changes are under review:
+Untuk mengulang browser E2E secara manual pada branch utama setelah PR digabung:
 
 ```powershell
 git fetch origin
-git switch chore/feeku-security-prod-readiness
-git pull origin chore/feeku-security-prod-readiness
+git switch main
+git pull origin main
 npm ci
 npm run check
 npm start
@@ -73,4 +73,4 @@ In a second terminal:
 npm run test:local
 ```
 
-Then use a browser on the same computer to work through the test cases above. The browser test plan itself does not make or delete any database records. Browser E2E is not marked passed until the developer runs and records the results against the local server.
+Then use a browser on the same computer to work through the test cases above. The browser test plan itself does not make or delete any database records. Status selesai pada dokumen ini mengikuti konfirmasi pemilik project; catatan ini bukan hasil otomatis GitHub Actions.

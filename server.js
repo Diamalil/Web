@@ -3,12 +3,11 @@
 require('dotenv').config();
 
 const path = require('node:path');
-const fs = require('node:fs');
 const crypto = require('node:crypto');
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const session = require('express-session');
-const SQLiteSessionStore = require('./sqlite-session-store');
+const SupabaseSessionStore = require('./supabase-session-store');
 const helmet = require('helmet');
 
 const PORT = Number(process.env.PORT || 3000);
@@ -30,7 +29,11 @@ const googleReady = String(process.env.ENABLE_GOOGLE_OAUTH || '').toLowerCase() 
 const serviceReady = Boolean(SUPABASE_URL && SUPABASE_SECRET_KEY);
 
 const app = express();
-if (process.env.TRUST_PROXY && process.env.TRUST_PROXY !== '0') {
+const vercelRuntime = Boolean(process.env.VERCEL);
+if (vercelRuntime) {
+  // Vercel terminates TLS before forwarding requests to the Express function.
+  app.set('trust proxy', 1);
+} else if (process.env.TRUST_PROXY && process.env.TRUST_PROXY !== '0') {
   app.set('trust proxy', Number(process.env.TRUST_PROXY) || process.env.TRUST_PROXY);
 }
 app.disable('x-powered-by');
@@ -57,11 +60,38 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: false, limit: '30kb' }));
 
-const sessionFile = path.resolve(process.env.SESSION_DATABASE_FILE || './data/sessions.sqlite');
-fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+const SESSION_SECRET = String(process.env.SESSION_SECRET || 'development-only-change-this-secret-before-deployment');
+if (process.env.NODE_ENV === 'production' && SESSION_SECRET.length < 32) {
+  throw new Error('SESSION_SECRET wajib disetel minimal 32 karakter saat production.');
+}
+
+const sessionStoreKind = String(process.env.SESSION_STORE || (vercelRuntime ? 'supabase' : 'sqlite')).toLowerCase();
+let sessionStore;
+
+if (sessionStoreKind === 'supabase') {
+  if (!serviceReady) {
+    throw new Error('SESSION_STORE=supabase requires SUPABASE_URL and SUPABASE_SECRET_KEY.');
+  }
+  sessionStore = new SupabaseSessionStore({
+    url: SUPABASE_URL,
+    apiKey: SUPABASE_SECRET_KEY
+  });
+} else if (sessionStoreKind === 'sqlite') {
+  if (vercelRuntime) {
+    throw new Error('SQLite sessions are not supported on Vercel. Set SESSION_STORE=supabase.');
+  }
+  const fs = require('node:fs');
+  const SQLiteSessionStore = require('./sqlite-session-store');
+  const sessionFile = path.resolve(process.env.SESSION_DATABASE_FILE || './data/sessions.sqlite');
+  fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+  sessionStore = new SQLiteSessionStore(sessionFile);
+} else {
+  throw new Error('SESSION_STORE must be either "sqlite" or "supabase".');
+}
+
 app.use(session({
-  store: new SQLiteSessionStore(sessionFile),
-  secret: process.env.SESSION_SECRET || 'development-only-change-this-secret-before-deployment',
+  store: sessionStore,
+  secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   name: 'feeku.sid',
@@ -1503,7 +1533,8 @@ app.get('/healthz', (req, res) => {
     service: 'feeku-website',
     businessDatabase: 'postgresql',
     authConfigured: supabaseReady,
-    adminOperationsConfigured: serviceReady
+    adminOperationsConfigured: serviceReady,
+    sessionStore: sessionStoreKind
   });
 });
 
@@ -1517,14 +1548,15 @@ app.use((err, req, res, next) => {
   });
 });
 
-if (process.env.NODE_ENV === 'production' && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) {
-  console.error('SESSION_SECRET wajib disetel minimal 32 karakter saat production.');
-  process.exit(1);
+module.exports = app;
+
+if (!vercelRuntime && require.main === module) {
+  app.listen(PORT, HOST, () => {
+    console.log('FeeKu Website berjalan di ' + HOST + ':' + PORT);
+    console.log('Business database: PostgreSQL (Supabase)');
+    console.log('Supabase Auth: ' + (supabaseReady ? 'terkonfigurasi' : 'belum dikonfigurasi'));
+    console.log('Google sign-in: ' + (googleReady ? 'ditampilkan' : 'disembunyikan'));
+    console.log('Server admin operations: ' + (serviceReady ? 'terkonfigurasi' : 'SUPABASE_SECRET_KEY belum diatur'));
+    console.log('Session store: ' + sessionStoreKind);
+  });
 }
-app.listen(PORT, HOST, () => {
-  console.log('FeeKu Website berjalan di ' + HOST + ':' + PORT);
-  console.log('Business database: PostgreSQL (Supabase)');
-  console.log('Supabase Auth: ' + (supabaseReady ? 'terkonfigurasi' : 'belum dikonfigurasi'));
-  console.log('Google sign-in: ' + (googleReady ? 'ditampilkan' : 'disembunyikan'));
-  console.log('Server admin operations: ' + (serviceReady ? 'terkonfigurasi' : 'SUPABASE_SECRET_KEY belum diatur'));
-});

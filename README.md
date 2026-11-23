@@ -39,9 +39,12 @@ Browser
                   ├── activity_logs
                   └── payment gateway preparation tables
 
-SQLite:
-  ├── data/sessions.sqlite (session/CSRF store saat runtime)
+SQLite lokal:
+  ├── data/sessions.sqlite (session/CSRF store untuk development)
   └── data/buku-kas.sqlite (sumber migrasi lama, tidak dibaca server aktif)
+
+Supabase:
+  └── public.feeku_server_sessions (session store persisten khusus Vercel)
 ```
 
 Semua operasi bisnis pengguna memakai token Supabase milik pengguna dan dibatasi oleh RLS. Server menggunakan `SUPABASE_SECRET_KEY` hanya untuk fungsi server tepercaya seperti log lintas akun, operasi admin, dan migrasi satu kali. Secret key tidak boleh dikirim ke browser atau disimpan di repository.
@@ -68,6 +71,7 @@ SUPABASE_URL=https://dvtnxezautjkeshsbdyk.supabase.co
 SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
 SUPABASE_SECRET_KEY=sb_secret_...
 SESSION_SECRET=ganti-dengan-random-secret-panjang-minimal-32-karakter
+SESSION_STORE=sqlite
 SESSION_DATABASE_FILE=./data/sessions.sqlite
 ENABLE_GOOGLE_OAUTH=true
 ```
@@ -196,6 +200,10 @@ Jangan hapus atau menimpa database SQLite dan snapshot backup sebelum verifikasi
 ## Import dari aplikasi Flutter lama
 
 `scripts/import-legacy-sqlite.js` adalah utilitas lama untuk mengimpor backup SQLite dari aplikasi Flutter ke database website SQLite lama. Jika data dari aplikasi Flutter belum pernah masuk ke website SQLite, jalankan utilitas itu pada instalasi/versi lama terlebih dahulu, verifikasi hasilnya, kemudian jalankan `migrate:postgres` di atas. Jangan menjalankan utilitas lama tersebut setelah cutover PostgreSQL; script itu bukan jalur import langsung ke PostgreSQL.
+
+## Deployment Vercel
+
+Panduan lengkap environment variables, Git import, URL Auth, dan pengujian deployment tersedia di [VERCEL-DEPLOY.md](VERCEL-DEPLOY.md). Vercel memakai Supabase sebagai session store persisten; SQLite hanya dipakai pada development lokal.
 
 ## Administrator
 

@@ -53,9 +53,11 @@ These counts describe the current project state only. They are not evidence that
 - Set `SUPABASE_URL`, the publishable key, `SUPABASE_SECRET_KEY`, and a random `SESSION_SECRET` of at least 32 characters in the hosting provider's secret manager. Never place server secrets in frontend files or Git.
 - Configure `TRUST_PROXY` only for the actual trusted reverse-proxy topology. Do not trust arbitrary forwarded headers.
 - Set `ADMIN_ALLOWED_CIDRS` to the smallest network ranges required for administration. Do not use `0.0.0.0/0` or `::/0`.
-- Confirm the host provides persistent writable storage for `SESSION_DATABASE_FILE`, or replace the SQLite session store with a shared durable store before running multiple instances or ephemeral/serverless instances.
+- Local development uses the SQLite session store. Vercel automatically selects the Supabase PostgREST-backed session store (`public.feeku_server_sessions`) so session and CSRF state persists across function instances. The table has RLS enabled; table grants are limited to `service_role`. SQL verification confirmed `anon` and `authenticated` have no SELECT privilege. The server refuses to start on Vercel if SQLite sessions are explicitly selected.
 - Review rate limiting for a multi-instance deployment; the default in-process limiter is not a shared rate limit.
-- Confirm the hosting platform starts `node server.js` and forwards health checks to `/healthz`. Note that the current `/healthz` handler reports process/configuration flags only; it does not run a live PostgreSQL query. Add external monitoring or a separate readiness probe for actual Supabase/PostgreSQL connectivity before production.
+- Vercel configuration is included in `vercel.json`: Express Function in Singapore (`sin1`), 30-second maximum duration, and bundled `public/**` files for the HTML shell. `server.js` exports the Express app to Vercel while preserving the local `npm start` behavior.
+- `/healthz` reports runtime configuration, including `sessionStore`, but does not run a live PostgreSQL query. Add external monitoring or a separate readiness probe for actual Supabase/PostgreSQL connectivity before production.
+- The Vercel app and environment variables still need to be configured in the Vercel account. See `VERCEL-DEPLOY.md`.
 
 ## Dependency audit
 
@@ -73,9 +75,8 @@ These counts describe the current project state only. They are not evidence that
 
 ## Test and operations gate
 
-- [ ] Run `npm ci` on the target Node.js runtime.
-- [ ] Run `npm run check`.
-- [ ] Run `npm start` and `npm run test:local` on the local machine.
+- [x] Run `npm ci`, `npm run check`, and `npm run test:local` on Node.js 26 in GitHub Actions (PR #9, CI run #45104801813).
+- [ ] Repeat the install and smoke test on the developer's local machine if it will be used as a separate local release gate.
 - [x] Complete the browser test plan in `BROWSER-E2E.md` using dedicated test accounts (reported complete by the project owner).
 - [ ] Validate email and Google OAuth flows on a staging domain.
 - [ ] Verify user/admin authorization and IP allowlist behavior in staging.
@@ -85,9 +86,11 @@ These counts describe the current project state only. They are not evidence that
 - [x] Resolve dependency vulnerabilities and make `npm audit` a blocking CI check (PR #8; CI run #8: 0 vulnerabilities).
 - [x] Remove authenticated-client execution of the privileged restore RPC; verify grants and re-run Security Advisor (PR #8 and migration `20261123025556`).
 - [ ] Upgrade the Supabase organization from Free to Pro+ and enable Leaked Password Protection; it is not available on the current plan.
+- [x] Create the persistent Vercel session table with RLS and least-privilege grants; verify table/role privileges (migration `20261123031051`).
+- [x] Add tests for Supabase session-store CRUD/expiry and Vercel CSRF cookie continuity (7 session tests + 1 Vercel bootstrap test passed in CI run #45104801813).
 - [ ] Re-run Supabase Performance and Health Advisors after the next release configuration/schema changes.
 - [ ] Re-test backup/restore through the updated server-only service-role path with a disposable account.
 
 ## Browser E2E status
 
-The project owner has confirmed that the browser E2E checklist is complete. The GitHub CI job remains separate: it uses placeholder Supabase settings and validates dependency installation/audit, the SQLite session-store adapter, JavaScript syntax, and Express HTTP smoke behavior. It does not exercise live Supabase Auth or the browser UI. Because PR #8 changed the session adapter and backup restore path, perform a focused post-merge regression of login/session continuity and backup/restore with a disposable account before the next public release.
+The project owner has confirmed that the browser E2E checklist is complete. The GitHub CI job remains separate: it uses placeholder Supabase settings and validates dependency installation/audit, SQLite and mocked Supabase session-store behavior, Vercel Express bootstrap/CSRF persistence, JavaScript syntax, and Express HTTP smoke behavior. It does not exercise live Supabase Auth, a live Vercel deployment, or browser UI. The project owner confirmed browser E2E completion. Because PR #8 changed the session adapter and backup restore path, and PR #9 adds the serverless store, perform a focused post-deploy regression of real login/session continuity and backup/restore with a disposable account before any public release.

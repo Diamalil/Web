@@ -6,6 +6,7 @@ Pembaruan: 23 November 2026
 
 - Repository: Diamalil/Web, branch utama main.
 - PR #8 untuk dependency hardening dan restore RPC sudah merged.
+- PR #9 menambahkan session store Supabase untuk Vercel; CI run `45104801813` lulus seluruh langkah. PR ini belum digabung ketika laporan ini diperbarui.
 - Project Supabase Database FeeKu berstatus ACTIVE_HEALTHY, PostgreSQL 17.12, region ap-southeast-1.
 - FeeKu masih prototype. Import database bisnis SQLite lama sengaja dilewati sesuai keputusan pemilik project. Tidak ada data bisnis SQLite lama yang diimpor dalam pekerjaan ini.
 
@@ -99,7 +100,25 @@ PR: https://github.com/Diamalil/Web/pull/8
 - CI menggunakan placeholder Supabase settings. CI tidak menguji Supabase Auth live atau browser UI, sehingga keduanya tidak diklaim lulus dari run ini.
 - Karena PR #8 mengubah session store dan jalur restore, lakukan regression singkat login/session continuity serta backup/restore dengan akun disposable pada versi aplikasi terbaru.
 
-## 7. Production readiness
+## 7. Persiapan deployment Vercel
+
+Migration `20261123031051_feeku_persistent_session_store` sudah diterapkan di Supabase:
+- Tabel `public.feeku_server_sessions` dibuat untuk data session Express dan token CSRF.
+- RLS aktif; hak akses tabel dicabut untuk `PUBLIC`, `anon`, dan `authenticated`, serta diberikan kepada `service_role`.
+- Verifikasi SQL: tabel tersedia, RLS aktif, `service_role` memiliki SELECT/INSERT, sedangkan `anon` dan `authenticated` tidak memiliki SELECT. Jumlah baris awal 0.
+- Data bisnis PostgreSQL tidak diubah.
+- Penyimpanan lokal SQLite tetap dipakai saat development. Vercel otomatis memakai Supabase session store; server menolak konfigurasi SQLite di Vercel.
+- Express app diekspor untuk runtime Vercel, proxy HTTPS dipercaya pada satu hop, dan `vercel.json` menempatkan function di region Singapore.
+- CI run #45104801813 pada Node.js 26: 7 session tests lulus, 1 Vercel bootstrap/CSRF persistence test lulus, syntax check lulus, dan HTTP smoke test lulus 10/10 tanpa kegagalan. `npm ci` dan `npm audit --audit-level=low` masing-masing melaporkan 0 vulnerabilities.
+- Pengujian Vercel memakai mock PostgREST untuk menguji perilaku session dan bukan pengujian koneksi live ke database atau deployment Vercel.
+
+PR: https://github.com/Diamalil/Web/pull/9
+CI: https://github.com/Diamalil/Web/actions/runs/45104801813
+Panduan deploy: `VERCEL-DEPLOY.md`
+
+Deployment live belum diverifikasi. Masih perlu import repo ke project Vercel, mengisi secrets server-only di Vercel Environment Variables, mengatur Supabase Auth Site URL/Redirect URLs, menetapkan IP admin yang benar pada `ADMIN_ALLOWED_CIDRS`, lalu menjalankan tes login dan backup/restore di domain hasil deploy.
+
+## 8. Production readiness
 
 **Belum siap untuk production.** Dependency vulnerabilities sudah nol dan privilege restore sudah diperketat. Gate berikut masih terbuka:
 - Upgrade organisasi Supabase dari Free ke Pro+ bila ingin mengaktifkan Leaked Password Protection.
@@ -107,9 +126,10 @@ PR: https://github.com/Diamalil/Web/pull/8
 - Siapkan custom SMTP, domain pengirim, SPF/DKIM/DMARC, dan uji email.
 - Konfigurasi production domain HTTPS, Auth Site URL/Redirect URLs, serta Google OAuth production callback.
 - Simpan secrets di secret manager hosting, bukan repository.
-- Pastikan session storage persisten; gunakan shared durable store bila deployment multi-instance/ephemeral.
+- Selesaikan import project dan pengisian Environment Variables Vercel, lalu verifikasi endpoint, login/session, serta backup/restore pada deployment aktual.
+- Session storage untuk Vercel sudah disiapkan melalui tabel Supabase dengan RLS/grants terbatas; uji koneksi live masih perlu dilakukan pada deployment.
 - Tinjau rate limiter untuk deployment multi-instance.
 - Siapkan backup PostgreSQL dan simulasi restore terkontrol pada staging.
 - Jalankan Supabase Advisors kembali sebelum launch.
 
-Rincian lengkap ada pada PRODUCTION-READINESS.md.
+Rincian lengkap ada pada PRODUCTION-READINESS.md dan VERCEL-DEPLOY.md.
