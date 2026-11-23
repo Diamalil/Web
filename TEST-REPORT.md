@@ -25,7 +25,7 @@ Jumlah baris aktual diperiksa kembali pada 23 November 2026 setelah pengujian re
 
 Data tersebut adalah isi PostgreSQL prototype saat pemeriksaan. Asal data tidak disimpulkan dari jumlah ini. Semua baris dipertahankan; tidak ada truncation atau reset.
 
-Tujuh migration sebelumnya telah tercatat. Migration keamanan terbaru yang diterapkan adalah `20261123030000_harden_activity_log_client_permissions`.
+Tujuh migration sebelumnya telah tercatat. Migration keamanan terbaru yang diterapkan adalah `20261123021124_harden_activity_log_client_permissions`.
 
 ## 3. Uji integrasi PostgreSQL dan RLS
 
