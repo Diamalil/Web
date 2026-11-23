@@ -8,11 +8,12 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "create-admin": "node scripts/create-admin.js",
-    "check": "node --check server.js && node --check public/app.js && node --check scripts/create-admin.js && node --check scripts/import-legacy-sqlite.js && node --check scripts/migrate-sqlite-to-postgres.js && node --check scripts/backup-database.js && node --check scripts/smoke-local.js",
+    "check": "node --check server.js && node --check sqlite-session-store.js && node --check tests/sqlite-session-store.test.js && node --check public/app.js && node --check scripts/create-admin.js && node --check scripts/import-legacy-sqlite.js && node --check scripts/migrate-sqlite-to-postgres.js && node --check scripts/backup-database.js && node --check scripts/smoke-local.js",
     "revoke-admin": "node scripts/create-admin.js --revoke",
     "migrate:postgres": "node scripts/migrate-sqlite-to-postgres.js",
     "backup:sqlite-legacy": "node scripts/backup-database.js",
-    "test:local": "node scripts/smoke-local.js"
+    "test:local": "node scripts/smoke-local.js",
+    "test:session-store": "node --test tests/sqlite-session-store.test.js"
   },
   "engines": {
     "node": "^22.9.0 || ^24.0.0 || ^26.0.0"
@@ -20,7 +21,6 @@
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^12.11.1",
-    "connect-sqlite3": "^0.9.16",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
@@ -32,7 +32,6 @@
   },
   "allowScripts": {
     "better-sqlite3@12.11.1": true,
-    "sqlite3@5.1.7": true,
     "sqlite3@6.0.1": true
   }
 }
