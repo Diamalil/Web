@@ -15,7 +15,7 @@
     "test:local": "node scripts/smoke-local.js"
   },
   "engines": {
-    "node": ">=20.11.0"
+    "node": "^22.9.0 || ^24.0.0 || ^26.0.0"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
