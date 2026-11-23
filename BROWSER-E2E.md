@@ -56,10 +56,12 @@ This plan complements `npm run test:local`. The local smoke test checks HTTP end
 
 ## Local execution
 
-From the repository directory:
+From the repository directory, use the readiness branch while the changes are under review:
 
 ```powershell
-git pull origin main
+git fetch origin
+git switch chore/feeku-security-prod-readiness
+git pull origin chore/feeku-security-prod-readiness
 npm ci
 npm run check
 npm start
