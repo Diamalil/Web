@@ -57,6 +57,12 @@ These counts describe the current project state only. They are not evidence that
 - Review rate limiting for a multi-instance deployment; the default in-process limiter is not a shared rate limit.
 - Confirm the hosting platform starts `node server.js` and forwards health checks to `/healthz`. Note that the current `/healthz` handler reports process/configuration flags only; it does not run a live PostgreSQL query. Add external monitoring or a separate readiness probe for actual Supabase/PostgreSQL connectivity before production.
 
+## Dependency audit
+
+The CI dependency audit currently reports 7 transitive npm vulnerabilities: 2 low, 4 high, and 1 critical. The affected packages reported by npm are `@tootallnate/once`, `cacache`, `http-proxy-agent`, `make-fetch-happen`, `node-gyp`, `sqlite3`, and `tar`. The `tar` finding includes critical archive path traversal/file overwrite advisories. The audit report marked fixes as available, but the lockfile has not yet been updated or re-tested. Treat high/critical findings as a hard production blocker. Review the dependency paths and update the lockfile without force-upgrading native dependencies blindly.
+
+CI run #2 completed successfully on Node.js 26: locked install, JavaScript syntax checks, and the HTTP smoke test all passed. npm audit is currently informational/non-blocking in the workflow so the full test job can still execute; that does not imply the dependency tree is clear.
+
 ## Supabase Auth and email
 
 - Set the production Site URL to the real HTTPS application domain.
@@ -78,7 +84,7 @@ These counts describe the current project state only. They are not evidence that
 - [ ] Verify JSON backup and restore using a disposable test account.
 - [ ] Configure and test PostgreSQL backups and an actual restore procedure outside the application.
 - [ ] Configure monitoring, error alerts, retention, and incident-response ownership.
-- [ ] Review `npm audit` output and update dependencies before launch.
+- [ ] Resolve the 4 high and 1 critical npm audit findings, update `package-lock.json`, then re-run `npm ci`, `npm audit`, and CI. Do not use `npm audit fix --force` without reviewing native dependency compatibility.
 - [ ] Re-run Supabase Security, Performance, and Health Advisors after final config and schema changes.
 - [ ] Review the remaining restore SECURITY DEFINER warning and either document formal acceptance or redesign it.
 - [ ] Enable leaked-password protection where available.
