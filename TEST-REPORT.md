@@ -77,6 +77,17 @@ Security Advisor setelah migration:
 - WARN: leaked password protection disabled.
 Health Advisor: tidak ada temuan.
 
+### Audit dependency npm
+
+GitHub Actions run #2, Node.js 26:
+- `npm ci` selesai.
+- `npm audit` melaporkan 7 vulnerability: 2 low, 4 high, 1 critical.
+- Paket transitif yang ditandai: `@tootallnate/once`, `cacache`, `http-proxy-agent`, `make-fetch-happen`, `node-gyp`, `sqlite3`, dan `tar`.
+- Semua temuan tersebut tercatat `direct=false` dan `fixAvailable=true` pada laporan audit saat CI berjalan.
+- Critical advisory pada `tar` berkaitan dengan path traversal/overwrite saat ekstraksi arsip.
+- Belum dilakukan pembaruan lockfile karena jalur dependency perlu ditinjau agar perbaikan tidak merusak native SQLite/session packages. **Temuan high/critical ini wajib diselesaikan sebelum production.** Jangan menggunakan `npm audit fix --force` tanpa review.
+
+
 ## 5. Auth dan Google OAuth
 
 - Konfigurasi login memakai satu halaman.
@@ -93,7 +104,7 @@ PR #6 menambahkan `npm run test:local`. Test memeriksa HTML shell, JS/CSS, healt
 - Tidak ada server FeeKu lokal yang dapat diakses dari environment review dan tidak ada URL staging/production yang diberikan.
 - Browser E2E belum dijalankan. `npm run test:local` adalah HTTP smoke test, bukan browser automation.
 - Matriks browser manual telah disiapkan pada `BROWSER-E2E.md`.
-- Workflow CI baru dalam branch ini menjalankan syntax check dan HTTP smoke test. Status workflow harus diperiksa setelah PR dibuat.
+- Workflow CI di PR #7 sukses pada run #2 dengan Node.js 26: `npm ci`, dependency audit report, syntax check, dan HTTP smoke test. Smoke test menunjukkan 10 pass, 0 fail, 2 warning. Dua warning berasal dari CI yang sengaja tidak mengisi SUPABASE_SECRET_KEY dan menonaktifkan Google OAuth.
 
 ## 7. Production readiness
 
