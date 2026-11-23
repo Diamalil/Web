@@ -8,7 +8,7 @@ const crypto = require('node:crypto');
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const session = require('express-session');
-const connectSQLite3 = require('connect-sqlite3');
+const SQLiteSessionStore = require('./sqlite-session-store');
 const helmet = require('helmet');
 
 const PORT = Number(process.env.PORT || 3000);
@@ -57,16 +57,10 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: false, limit: '30kb' }));
 
-const SQLiteStore = connectSQLite3(session);
 const sessionFile = path.resolve(process.env.SESSION_DATABASE_FILE || './data/sessions.sqlite');
 fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
 app.use(session({
-  store: new SQLiteStore({
-    db: path.basename(sessionFile),
-    dir: path.dirname(sessionFile),
-    table: 'sessions',
-    concurrentDB: true
-  }),
+  store: new SQLiteSessionStore(sessionFile),
   secret: process.env.SESSION_SECRET || 'development-only-change-this-secret-before-deployment',
   resave: false,
   saveUninitialized: false,
@@ -1304,8 +1298,8 @@ app.post('/api/settings/restore', requireAuth, asyncRoute(async (req, res) => {
   try {
     const result = await restFetch('rpc/restore_feeku_user_backup', {
       method: 'POST',
-      token: req.accessToken,
-      body: { p_data: input }
+      service: true,
+      body: { p_user_id: req.user.id, p_data: input }
     });
     recordActivity(req, 'backup_restore', 'backup', null, {
       transactions: input.transactions.length,
