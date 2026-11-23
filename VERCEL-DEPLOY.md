@@ -21,7 +21,7 @@ Buat variabel berikut di Vercel Project Settings → Environment Variables. Set 
 | `ENABLE_GOOGLE_OAUTH` | `false` sampai Google OAuth dan callback domain diverifikasi |
 | `ADMIN_ALLOWED_CIDRS` | IP publik admin dengan suffix CIDR yang sempit, misalnya `203.0.113.10/32` sebagai format contoh saja |
 
-Vercel menetapkan `VERCEL=1` pada runtime. Jika `SESSION_STORE` tidak diisi, aplikasi otomatis memilih store Supabase saat berjalan di Vercel. Nilai eksplisit `supabase` tetap disarankan agar konfigurasi mudah diaudit. Store ini menggunakan Supabase REST dengan `SUPABASE_SECRET_KEY`, bukan filesystem serverless.
+Vercel menetapkan `VERCEL=1` pada runtime dan menyajikan isi `public/` sebagai aset statis. `server.js` menjadi backend Express entrypoint. Jika `SESSION_STORE` tidak diisi, aplikasi otomatis memilih store Supabase saat berjalan di Vercel. Nilai eksplisit `supabase` tetap disarankan agar konfigurasi mudah diaudit. Store ini menggunakan Supabase REST dengan `SUPABASE_SECRET_KEY`, bukan filesystem serverless.
 
 Jangan isi `ADMIN_ALLOWED_CIDRS` dengan `0.0.0.0/0` atau `::/0`. Bila allowlist kosong, aturan bawaan hanya mengizinkan loopback dan jaringan privat, sehingga panel admin tidak dapat diakses dari IP internet biasa. Dapatkan IP publik dari jaringan admin dan masukkan hanya IP/rentang yang memang diperlukan.
 
@@ -29,7 +29,7 @@ Jangan isi `ADMIN_ALLOWED_CIDRS` dengan `0.0.0.0/0` atau `::/0`. Bila allowlist 
 
 1. Buka Vercel dan import repository `Diamalil/Web`.
 2. Pilih root directory repository dan production branch `main`.
-3. Gunakan framework preset Express (deteksi otomatis). Jangan mengisi build command atau output directory kustom.
+3. Biarkan Vercel mendeteksi Express dari dependency `express` dan entrypoint root `server.js`. Jangan membuat folder `api/`, rewrite, build command, atau output directory kustom. Bila dashboard meminta preset, gunakan deteksi otomatis/Express yang tersedia.
 4. Pilih Node.js 26.x. `package.json` sudah mengizinkan Node.js 26.
 5. Isi environment variables Production di atas, lalu deploy.
 6. Setiap perubahan environment variable memerlukan deployment ulang.
