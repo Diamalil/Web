@@ -19,16 +19,33 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 26
           cache: npm
 
       - name: Install locked dependencies
         run: npm ci
+
+      - name: Report dependency vulnerabilities
+        shell: bash
+        run: |
+          npm audit --json > "$RUNNER_TEMP/feeku-npm-audit.json" || true
+          node - "$RUNNER_TEMP/feeku-npm-audit.json" <<'NODE'
+          const fs = require('node:fs');
+          const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const counts = report.metadata?.vulnerabilities || {};
+          console.log('npm audit summary:', JSON.stringify(counts));
+          for (const [name, item] of Object.entries(report.vulnerabilities || {})) {
+            console.log(`${String(item.severity).toUpperCase()} ${name} | range=${item.range} | direct=${item.isDirect} | fix=${JSON.stringify(item.fixAvailable)}`);
+            for (const advisory of (item.via || []).filter(value => typeof value === 'object')) {
+              console.log(`  - ${advisory.title || advisory.name}: ${advisory.url || 'No advisory URL'}`);
+            }
+          }
+          NODE
 
       - name: Check JavaScript syntax
         run: npm run check
