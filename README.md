@@ -83,6 +83,51 @@ URL lokal:
 - Administrator: login melalui halaman yang sama; server otomatis mengarahkan akun ber-role admin ke `http://localhost:3000/admin`.
 - Health check: `http://localhost:3000/healthz`
 
+## Menjalankan dan memeriksa website secara lokal
+
+Gunakan Node.js 20.11 atau lebih baru.
+
+```bash
+npm install
+```
+
+Pastikan file `.env` di folder utama project memuat setidaknya:
+
+```env
+NODE_ENV=development
+HOST=0.0.0.0
+PORT=3000
+SUPABASE_URL=https://dvtnxezautjkeshsbdyk.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+SUPABASE_SECRET_KEY=
+SESSION_SECRET=ganti-dengan-random-secret-panjang
+ENABLE_GOOGLE_OAUTH=true
+```
+
+`SUPABASE_SECRET_KEY` wajib diisi pada server jika akan memakai operasi administrator lintas akun, audit log tepercaya, atau migrasi SQLite. Jangan menaruh secret tersebut di frontend atau repository. Untuk akses dari komputer yang sama, `HOST=0.0.0.0` tetap memungkinkan website dibuka melalui `http://localhost:3000`.
+
+Jalankan server di terminal pertama:
+
+```bash
+npm start
+```
+
+Buka `http://localhost:3000` di browser. Biarkan terminal server tetap berjalan.
+
+Di terminal kedua, dari folder project yang sama, jalankan pemeriksaan HTTP lokal:
+
+```bash
+npm run test:local
+```
+
+Pemeriksaan ini menguji HTML shell, file JavaScript/CSS, health check PostgreSQL, konfigurasi Auth, CSRF bootstrap, respons identitas tanpa login, penolakan endpoint pengguna/admin tanpa token, dan redirect rute login admin lama ke satu halaman login. Script tidak membuat transaksi atau mengubah data bisnis.
+
+Untuk alamat/port berbeda:
+
+```bash
+npm run test:local -- http://127.0.0.1:3000
+```
+
 ## Migrasi data bisnis dari SQLite ke PostgreSQL
 
 **Jangan langsung jalankan versi server PostgreSQL pada instalasi lama sebelum data SQLite dimigrasikan.** File sumber harus berasal dari server/komputer yang menjalankan website versi SQLite sebelumnya. File SQLite tidak tersedia di repository dan tidak termasuk dalam project Supabase.
