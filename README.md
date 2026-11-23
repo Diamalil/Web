@@ -1,6 +1,6 @@
 # FeeKu Website
 
-Website FeeKu memakai Supabase Auth untuk identitas pengguna dan PostgreSQL Supabase untuk seluruh data bisnis. Backend Node.js/Express memvalidasi access token, menerapkan pembatasan akses administrator, dan menjalankan operasi bisnis melalui Supabase PostgREST/RPC. SQLite tidak lagi menjadi database transaksi aktif; SQLite hanya dipakai untuk session store dan sebagai sumber baca saat migrasi dari instalasi lama.
+FeeKu saat ini adalah prototype. Website memakai Supabase Auth untuk identitas pengguna dan PostgreSQL Supabase untuk seluruh data bisnis. Data prototype yang sudah ada pada PostgreSQL harus dipertahankan. Backend Node.js/Express memvalidasi access token, menerapkan pembatasan akses administrator, dan menjalankan operasi bisnis melalui Supabase PostgREST/RPC. SQLite tidak lagi menjadi database transaksi aktif; SQLite hanya dipakai untuk session store. Import data bisnis SQLite lama bersifat opsional dan tidak termasuk scope pengujian prototype saat ini.
 
 ## Fitur
 
@@ -48,7 +48,7 @@ Semua operasi bisnis pengguna memakai token Supabase milik pengguna dan dibatasi
 
 ## Prasyarat dan instalasi
 
-- Node.js 20.11 atau lebih baru.
+- Node.js 22.9, 24, atau 26 LTS. Node.js 26 LTS direkomendasikan untuk deployment.
 - Project Supabase FeeKu yang sudah menerapkan migration pada direktori `supabase/migrations`.
 - Provider Auth yang diperlukan sudah dikonfigurasi.
 
@@ -85,7 +85,7 @@ URL lokal:
 
 ## Menjalankan dan memeriksa website secara lokal
 
-Gunakan Node.js 20.11 atau lebih baru.
+Gunakan Node.js 22.9, 24, atau 26 LTS. Node.js 26 LTS direkomendasikan untuk deployment.
 
 ```bash
 npm install
@@ -130,7 +130,7 @@ npm run test:local -- http://127.0.0.1:3000
 
 ## Migrasi data bisnis dari SQLite ke PostgreSQL
 
-**Jangan langsung jalankan versi server PostgreSQL pada instalasi lama sebelum data SQLite dimigrasikan.** File sumber harus berasal dari server/komputer yang menjalankan website versi SQLite sebelumnya. File SQLite tidak tersedia di repository dan tidak termasuk dalam project Supabase.
+**Catatan scope prototype:** aplikasi saat ini menggunakan PostgreSQL Supabase dan data prototype di dalamnya. Import database bisnis SQLite lama sengaja dilewati sesuai scope prototype. Jangan menjalankan migrator pada environment ini atau mengosongkan PostgreSQL untuk menyiapkan migrasi. Bagian berikut hanya menjadi panduan opsional apabila suatu saat ada permintaan eksplisit untuk membawa data dari instalasi lama.
 
 ### Sebelum migrasi
 
@@ -232,6 +232,13 @@ Panel admin memiliki allowlist IP melalui `ADMIN_ALLOWED_CIDRS`. Jika kosong, se
 - Restore per akun memakai `POST /api/settings/restore` dan RPC PostgreSQL `restore_feeku_user_backup`.
 - `npm run backup:sqlite-legacy` hanya mencadangkan file SQLite sumber lama untuk keperluan migrasi/rollback. Itu bukan backup PostgreSQL aktif.
 - Buat backup PostgreSQL di luar aplikasi secara berkala sesuai strategi operasional Supabase dan simpan di lokasi terpisah/terenkripsi.
+
+## Audit dan kesiapan rilis
+
+- Hasil audit, status uji, dan jumlah data prototype saat ini dicatat di `TEST-REPORT.md`.
+- Checklist production readiness ada di `PRODUCTION-READINESS.md`.
+- Matriks browser manual ada di `BROWSER-E2E.md`. `npm run test:local` adalah HTTP smoke test, bukan browser E2E.
+- CI menjalankan syntax check dan HTTP smoke test pada pull request/push ke `main`.
 
 ## Validasi kode
 
