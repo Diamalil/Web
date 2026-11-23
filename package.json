@@ -8,12 +8,13 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "create-admin": "node scripts/create-admin.js",
-    "check": "node --check server.js && node --check sqlite-session-store.js && node --check tests/sqlite-session-store.test.js && node --check public/app.js && node --check scripts/create-admin.js && node --check scripts/import-legacy-sqlite.js && node --check scripts/migrate-sqlite-to-postgres.js && node --check scripts/backup-database.js && node --check scripts/smoke-local.js",
+    "check": "node --check server.js && node --check sqlite-session-store.js && node --check supabase-session-store.js && node --check tests/sqlite-session-store.test.js && node --check tests/supabase-session-store.test.js && node --check tests/vercel-bootstrap.test.js && node --check public/app.js && node --check scripts/create-admin.js && node --check scripts/import-legacy-sqlite.js && node --check scripts/migrate-sqlite-to-postgres.js && node --check scripts/backup-database.js && node --check scripts/smoke-local.js",
     "revoke-admin": "node scripts/create-admin.js --revoke",
     "migrate:postgres": "node scripts/migrate-sqlite-to-postgres.js",
     "backup:sqlite-legacy": "node scripts/backup-database.js",
     "test:local": "node scripts/smoke-local.js",
-    "test:session-store": "node --test tests/sqlite-session-store.test.js"
+    "test:session-store": "node --test tests/sqlite-session-store.test.js tests/supabase-session-store.test.js",
+    "test:vercel": "node --test tests/vercel-bootstrap.test.js"
   },
   "engines": {
     "node": "^22.9.0 || ^24.0.0 || ^26.0.0"
