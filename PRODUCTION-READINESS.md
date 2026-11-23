@@ -12,12 +12,12 @@ Current PostgreSQL prototype row counts observed during this review:
 
 | Table | Rows |
 |---|---:|
-| categories | 1 |
-| products | 2 |
-| transactions | 1 |
-| transaction_items | 2 |
-| profits | 1 |
-| activity_logs | 99 |
+| categories | 3 |
+| products | 4 |
+| transactions | 2 |
+| transaction_items | 4 |
+| profits | 2 |
+| activity_logs | 170 |
 
 These counts describe the current project state only. They are not evidence that legacy SQLite data was imported.
 
@@ -35,14 +35,14 @@ These counts describe the current project state only. They are not evidence that
 - The `feeku.sid` cookie is `HttpOnly`, `SameSite=Lax`, and marked `Secure` in production.
 - Admin routes are protected by role checks and an IP/CIDR allowlist.
 - Client write permissions on `public.activity_logs` have been revoked. Standard users retain SELECT access to their own audit records; server-side `service_role` writes remain available. Verification confirmed INSERT/UPDATE/DELETE are false for `authenticated`, SELECT is true, and the existing 99 audit rows remain.
-- The restore RPC was invoked under an authenticated test role using an empty payload inside a transaction that was rolled back. It returned successfully and no rows changed.
+- The account restore endpoint now calls a service-role-only RPC after Express has validated the Supabase user session. The target user ID is taken from the verified server-side request identity, never from the submitted backup payload.
+- The previous `public.restore_feeku_user_backup(jsonb)` function was removed. The replacement `public.restore_feeku_user_backup(uuid,jsonb)` is `SECURITY DEFINER`, has an empty `search_path`, checks the JWT role is `service_role`, and grants `EXECUTE` only to `service_role`. SQL privilege verification confirmed `anon=false`, `authenticated=false`, and `service_role=true`.
 
 ### Open security items
 
-1. **Leaked Password Protection is disabled.** Enable it in Supabase Auth password security settings if the project's plan supports it. Supabase documentation says this feature is available on Pro Plan and above: https://supabase.com/docs/guides/auth/password-security
-2. **Restore RPC remains a Security Advisor warning.** `public.restore_feeku_user_backup(p_data)` is `SECURITY DEFINER` and callable by `authenticated`. The wrapper checks `auth.uid()`, checks the authenticated role, uses an empty search path, and passes the caller's own UID to a private helper. The private helper is not executable by client roles. This is an intentional design for per-user restore, but it must receive a dedicated security review and adversarial tests before public release. Do not change it to `SECURITY INVOKER` without redesigning the private helper boundary.
-3. Four RLS-enabled tables in the `private` schema have no direct client policies. This is intentional because client roles have no direct schema/table access; continue to verify grants whenever migrations change.
-4. The HTTP and browser testing described below is not a substitute for a professional penetration test or abuse review.
+1. **Leaked Password Protection remains disabled due to the current plan.** The Supabase organization is on the Free plan. Supabase documents leaked-password protection as Pro+ and lists it as unavailable on Free. This cannot be enabled on the current plan. See https://supabase.com/docs/guides/auth/password-security and https://supabase.com/pricing. Minimum password length and character requirements can still be strengthened in Auth settings, but those controls do not clear this specific Advisor warning.
+2. Four RLS-enabled tables in the `private` schema have no direct client policies. This is intentional because client roles have no direct schema/table access; continue to verify grants whenever migrations change.
+3. The HTTP and browser testing described below is not a substitute for a professional penetration test or abuse review.
 
 ## Runtime and deployment
 
@@ -59,9 +59,7 @@ These counts describe the current project state only. They are not evidence that
 
 ## Dependency audit
 
-The CI dependency audit currently reports 7 transitive npm vulnerabilities: 2 low, 4 high, and 1 critical. The affected packages reported by npm are `@tootallnate/once`, `cacache`, `http-proxy-agent`, `make-fetch-happen`, `node-gyp`, `sqlite3`, and `tar`. The `tar` finding includes critical archive path traversal/file overwrite advisories. Lockfile inspection traces the affected package chain to `connect-sqlite3@0.9.18`, which installs nested `sqlite3@5.1.7` and `node-gyp@8.4.1`; the older build tooling brings in `make-fetch-happen@9.1.0`, `cacache@15.3.0`, `http-proxy-agent@4.0.1`, and `tar@6.2.1`. The root `sqlite3@6.0.1` uses `tar@7.5.22`, so the vulnerable nested copy is a distinct package instance. The audit report marked fixes as available, but the lockfile has not yet been updated or re-tested. Treat high/critical findings as a hard production blocker. Review whether the session-store adapter should be upgraded or replaced, or whether version overrides are compatible, then update the lockfile and re-run the complete test suite. Do not force-upgrade native dependencies blindly.
-
-CI run #2 completed successfully on Node.js 26: locked install, JavaScript syntax checks, and the HTTP smoke test all passed. npm audit is currently informational/non-blocking in the workflow so the full test job can still execute; that does not imply the dependency tree is clear.
+**Resolved in PR #8 (merged to `main`).** The 7 findings originated from the obsolete `connect-sqlite3` dependency tree. FeeKu now uses a small local `express-session` store built on the existing `better-sqlite3` dependency. It retains the existing `sessions` table layout, avoiding deletion of stored sessions. The vulnerable nested `sqlite3@5.1.7`/`node-gyp@8.4.1` tree and 111 now-unreachable lockfile package entries were removed. CI run #8 on Node.js 26 completed `npm ci`, the blocking `npm audit --audit-level=low`, 3 session-store tests, syntax checks, and the HTTP smoke test successfully. `npm ci` reported 0 vulnerabilities and `npm audit` reported 0 vulnerabilities. The audit is now a required CI gate rather than informational.
 
 ## Supabase Auth and email
 
@@ -78,17 +76,18 @@ CI run #2 completed successfully on Node.js 26: locked install, JavaScript synta
 - [ ] Run `npm ci` on the target Node.js runtime.
 - [ ] Run `npm run check`.
 - [ ] Run `npm start` and `npm run test:local` on the local machine.
-- [ ] Complete the browser test plan in `BROWSER-E2E.md` using dedicated test accounts.
+- [x] Complete the browser test plan in `BROWSER-E2E.md` using dedicated test accounts (reported complete by the project owner).
 - [ ] Validate email and Google OAuth flows on a staging domain.
 - [ ] Verify user/admin authorization and IP allowlist behavior in staging.
 - [ ] Verify JSON backup and restore using a disposable test account.
 - [ ] Configure and test PostgreSQL backups and an actual restore procedure outside the application.
 - [ ] Configure monitoring, error alerts, retention, and incident-response ownership.
-- [ ] Resolve the 4 high and 1 critical npm audit findings, update `package-lock.json`, then re-run `npm ci`, `npm audit`, and CI. Do not use `npm audit fix --force` without reviewing native dependency compatibility.
-- [ ] Re-run Supabase Security, Performance, and Health Advisors after final config and schema changes.
-- [ ] Review the remaining restore SECURITY DEFINER warning and either document formal acceptance or redesign it.
-- [ ] Enable leaked-password protection where available.
+- [x] Resolve dependency vulnerabilities and make `npm audit` a blocking CI check (PR #8; CI run #8: 0 vulnerabilities).
+- [x] Remove authenticated-client execution of the privileged restore RPC; verify grants and re-run Security Advisor (PR #8 and migration `20261123025556`).
+- [ ] Upgrade the Supabase organization from Free to Pro+ and enable Leaked Password Protection; it is not available on the current plan.
+- [ ] Re-run Supabase Performance and Health Advisors after the next release configuration/schema changes.
+- [ ] Re-test backup/restore through the updated server-only service-role path with a disposable account.
 
-## Browser E2E limitation for this review
+## Browser E2E status
 
-No FeeKu server process or known public deployment URL was available to the review environment. A remote browser cannot exercise a developer's private `localhost` process. Therefore no browser-driven login or UI workflow is claimed as passed. The current `npm run test:local` test is an HTTP smoke test, not a browser E2E test. The planned CI job uses placeholder Supabase configuration and validates Express HTTP behavior only; it does not test real Auth, database connectivity, or UI flows. The CI workflow added in this branch runs syntax checks and the HTTP smoke test; the browser checklist must still be run from a local browser or against a staging URL.
+The project owner has confirmed that the browser E2E checklist is complete. The GitHub CI job remains separate: it uses placeholder Supabase settings and validates dependency installation/audit, the SQLite session-store adapter, JavaScript syntax, and Express HTTP smoke behavior. It does not exercise live Supabase Auth or the browser UI. Because PR #8 changed the session adapter and backup restore path, perform a focused post-merge regression of login/session continuity and backup/restore with a disposable account before the next public release.
