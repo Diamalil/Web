@@ -55,7 +55,7 @@ These counts describe the current project state only. They are not evidence that
 - Set `ADMIN_ALLOWED_CIDRS` to the smallest network ranges required for administration. Do not use `0.0.0.0/0` or `::/0`.
 - Confirm the host provides persistent writable storage for `SESSION_DATABASE_FILE`, or replace the SQLite session store with a shared durable store before running multiple instances or ephemeral/serverless instances.
 - Review rate limiting for a multi-instance deployment; the default in-process limiter is not a shared rate limit.
-- Confirm the hosting platform starts `node server.js` and forwards health checks to `/healthz`.
+- Confirm the hosting platform starts `node server.js` and forwards health checks to `/healthz`. Note that the current `/healthz` handler reports process/configuration flags only; it does not run a live PostgreSQL query. Add external monitoring or a separate readiness probe for actual Supabase/PostgreSQL connectivity before production.
 
 ## Supabase Auth and email
 
@@ -85,4 +85,4 @@ These counts describe the current project state only. They are not evidence that
 
 ## Browser E2E limitation for this review
 
-No FeeKu server process or known public deployment URL was available to the review environment. A remote browser cannot exercise a developer's private `localhost` process. Therefore no browser-driven login or UI workflow is claimed as passed. The current `npm run test:local` test is an HTTP smoke test, not a browser E2E test. The CI workflow added in this branch runs syntax checks and the HTTP smoke test; the browser checklist must still be run from a local browser or against a staging URL.
+No FeeKu server process or known public deployment URL was available to the review environment. A remote browser cannot exercise a developer's private `localhost` process. Therefore no browser-driven login or UI workflow is claimed as passed. The current `npm run test:local` test is an HTTP smoke test, not a browser E2E test. The planned CI job uses placeholder Supabase configuration and validates Express HTTP behavior only; it does not test real Auth, database connectivity, or UI flows. The CI workflow added in this branch runs syntax checks and the HTTP smoke test; the browser checklist must still be run from a local browser or against a staging URL.
