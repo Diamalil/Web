@@ -22,6 +22,7 @@ function createFakeFetch() {
 
   const fetch = async (urlValue, options = {}) => {
     const url = new URL(urlValue);
+    assert.equal(url.pathname, '/rest/v1/feeku_server_sessions');
     const method = String(options.method || 'GET').toUpperCase();
     const params = url.searchParams;
     calls.push({ url: url.toString(), method, headers: options.headers || {} });
@@ -102,7 +103,7 @@ function makeSession(userId, maxAge = 60000) {
 test('persists, retrieves, touches, lists, counts, and destroys sessions', async () => {
   const fake = createFakeFetch();
   const store = new SupabaseSessionStore({
-    url: 'https://example.supabase.co',
+    url: 'https://example.supabase.co///',
     apiKey: 'server-only-test-key',
     fetch: fake.fetch
   });
