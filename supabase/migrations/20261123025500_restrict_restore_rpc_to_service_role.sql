@@ -25,3 +25,5 @@ REVOKE ALL ON FUNCTION public.restore_feeku_user_backup(uuid, jsonb)
   FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.restore_feeku_user_backup(uuid, jsonb)
   TO service_role;
+
+NOTIFY pgrst, 'reload schema';
